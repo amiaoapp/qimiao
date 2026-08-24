@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default permissions for Float Launcher","local":true,"windows":["main"],"permissions":["core:default","global-shortcut:allow-register","global-shortcut:allow-unregister","autostart:allow-enable","autostart:allow-disable","autostart:allow-is-enabled"]}}

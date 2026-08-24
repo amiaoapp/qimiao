@@ -1,0 +1,31 @@
+[package]
+name = "miaoqi-launcher"
+version = "0.3.0"
+description = "APP喵旗下的智能跨平台启动器"
+authors = ["APP喵"]
+edition = "2021"
+
+[lib]
+name = "miaoqi_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+rfd = "0.15"
+sha2 = "0.10"
+base64 = "0.22"
+plist = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSString"] }
