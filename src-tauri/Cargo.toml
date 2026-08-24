@@ -1,6 +1,6 @@
 [package]
-name = "miaoqi-launcher"
-version = "0.3.0"
+name = "qimao-launcher"
+version = "0.4.0"
 description = "APP喵旗下的智能跨平台启动器"
 authors = ["APP喵"]
 edition = "2021"

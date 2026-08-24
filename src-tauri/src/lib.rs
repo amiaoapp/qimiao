@@ -125,7 +125,19 @@ fn launch_app(path: String) -> Result<(),String> {
 fn choose_folder() -> Option<String> { rfd::FileDialog::new().pick_folder().map(|p|p.to_string_lossy().to_string()) }
 
 #[tauri::command]
-fn open_plugin_directory()->Result<String,String>{let dir=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Library/Application Support/com.appmiao.miaoqi/plugins");fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Command::new("open").arg(&dir).spawn().map_err(|e|e.to_string())?;Ok(dir.to_string_lossy().into_owned())}
+fn open_plugin_directory()->Result<String,String>{
+    #[cfg(target_os="macos")]
+    let dir=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Library/Application Support/com.appmiao.miaoqi/plugins");
+    #[cfg(target_os="windows")]
+    let dir=std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("启喵/plugins");
+    #[cfg(target_os="linux")]
+    let dir=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(".local/share/qimao/plugins");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    #[cfg(target_os="macos")]let mut command=Command::new("open");
+    #[cfg(target_os="windows")]let mut command=Command::new("explorer");
+    #[cfg(target_os="linux")]let mut command=Command::new("xdg-open");
+    command.arg(&dir).spawn().map_err(|e|e.to_string())?;Ok(dir.to_string_lossy().into_owned())
+}
 
 #[tauri::command]
 fn clipboard_text()->Result<String,String>{#[cfg(target_os="macos")]let output=Command::new("pbpaste").output();#[cfg(target_os="windows")]let output=Command::new("powershell").args(["-NoProfile","-Command","Get-Clipboard -Raw"]).output();#[cfg(target_os="linux")]let output=Command::new("sh").args(["-c","wl-paste 2>/dev/null || xclip -selection clipboard -o"]).output();let output=output.map_err(|e|e.to_string())?;if output.status.success(){String::from_utf8(output.stdout).map_err(|e|e.to_string())}else{Err(String::from_utf8_lossy(&output.stderr).into_owned())}}
@@ -182,8 +194,8 @@ pub fn run() {
           app.global_shortcut().register(shortcut)?;
           #[cfg(target_os="macos")]
           app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-          let show=MenuItemBuilder::with_id("show","显示喵启").build(app)?;let settings=MenuItemBuilder::with_id("settings","设置…").build(app)?;let update=MenuItemBuilder::with_id("check_update","检查更新…").build(app)?;let quit=MenuItemBuilder::with_id("quit","退出喵启").build(app)?;let menu=MenuBuilder::new(app).items(&[&show,&settings,&update,&quit]).build()?;
-          let tray=TrayIconBuilder::with_id("main-tray").tooltip("喵启 Miaoqi").menu(&menu).show_menu_on_left_click(false).icon(colorful_tray_icon()?).icon_as_template(false);
+          let show=MenuItemBuilder::with_id("show","显示启喵").build(app)?;let settings=MenuItemBuilder::with_id("settings","设置…").build(app)?;let update=MenuItemBuilder::with_id("check_update","检查更新…").build(app)?;let quit=MenuItemBuilder::with_id("quit","退出启喵").build(app)?;let menu=MenuBuilder::new(app).items(&[&show,&settings,&update,&quit]).build()?;
+          let tray=TrayIconBuilder::with_id("main-tray").tooltip("启喵").menu(&menu).show_menu_on_left_click(false).icon(colorful_tray_icon()?).icon_as_template(false);
           tray.on_tray_icon_event(|tray,event|{if matches!(event,TrayIconEvent::Click{button:MouseButton::Left,button_state:MouseButtonState::Up,..}){toggle_launcher(tray.app_handle())}}).build(app)?;
           if let Some(w)=app.get_webview_window("main"){position_launcher(&w)} Ok(())
       })

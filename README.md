@@ -1,6 +1,8 @@
-# 喵启 Miaoqi
+# 启喵
 
 APP喵旗下的跨平台智能应用启动器，使用 Tauri 2、Rust、React 和 TypeScript 构建。
+
+支持 macOS（Apple Silicon / Intel）、Windows 和 Linux。
 
 ## 功能
 

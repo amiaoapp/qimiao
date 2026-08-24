@@ -2168,27 +2168,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "miaoqi-launcher"
-version = "0.3.0"
-dependencies = [
- "base64 0.22.1",
- "image",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "plist",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "walkdir",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,6 +2839,27 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qimao-launcher"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "plist",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "walkdir",
+]
 
 [[package]]
 name = "quick-xml"
