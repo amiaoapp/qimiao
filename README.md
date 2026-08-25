@@ -1,10 +1,18 @@
 # 启喵 / Qimiao
 
-> APP喵旗下的智能跨平台启动器。A smart cross-platform launcher by APP Miao.
+**智能跨平台启动器**
+
+> A smart cross-platform launcher by APP Miao.
 
 启喵使用 Tauri 2、Rust、React 和 TypeScript 构建，支持 macOS、Windows 与 Linux。它把应用启动、中文与拼音搜索、智能推荐、AI 查询和可扩展命令统一到一个轻量窗口中。
 
 Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app discovery, bilingual search, recommendations, AI queries, and extensible commands into one lightweight window.
+
+## 截图 / Screenshot
+
+<img width="2344" height="1504" alt="image" src="https://github.com/user-attachments/assets/e279ef7c-510a-4219-9aaf-af7b8f4a0dfe" />
+
+
 
 ## 功能 / Features
 
