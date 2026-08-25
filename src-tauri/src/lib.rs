@@ -10,6 +10,9 @@ use walkdir::WalkDir;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppItem { id: String, name: String, path: String, icon: Option<String>, search_terms: String, installed_at: Option<u64>, launch_count: u32, favorite: bool }
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuperCmdCommand { id:String, extension_name:String, extension_title:String, owner:Option<String>, command_name:String, title:String, description:String, mode:String, icon:Option<String> }
 struct ShortcutRuntime { double_control: AtomicBool, last_control: Mutex<Option<Instant>> }
 impl Default for ShortcutRuntime { fn default()->Self{Self{double_control:AtomicBool::new(false),last_control:Mutex::new(None)}} }
 
@@ -146,6 +149,37 @@ fn clipboard_text()->Result<String,String>{#[cfg(target_os="macos")]let output=C
 #[tauri::command]
 fn open_external_url(url:String)->Result<(),String>{if !url.starts_with("https://")&&!url.starts_with("http://"){return Err("仅支持 http/https 链接".into())}#[cfg(target_os="macos")]let mut command={let mut c=Command::new("open");c.arg(&url);c};#[cfg(target_os="windows")]let mut command={let mut c=Command::new("cmd");c.args(["/C","start","",&url]);c};#[cfg(target_os="linux")]let mut command={let mut c=Command::new("xdg-open");c.arg(&url);c};command.spawn().map(|_|()).map_err(|e|e.to_string())}
 
+fn supercmd_extensions_dir()->PathBuf{
+    #[cfg(target_os="macos")]
+    {return std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Library/Application Support/SuperCmd/extensions")}
+    #[cfg(target_os="windows")]
+    {return std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("SuperCmd/extensions")}
+    #[cfg(target_os="linux")]
+    {return std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(||std::env::var_os("HOME").map(|h|PathBuf::from(h).join(".config"))).unwrap_or_else(std::env::temp_dir).join("SuperCmd/extensions")}
+}
+
+fn file_data_url(path:&Path)->Option<String>{let bytes=fs::read(path).ok()?;let mime=match path.extension()?.to_string_lossy().to_ascii_lowercase().as_str(){"svg"=>"image/svg+xml","jpg"|"jpeg"=>"image/jpeg","webp"=>"image/webp",_=>"image/png"};Some(format!("data:{mime};base64,{}",STANDARD.encode(bytes)))}
+
+#[tauri::command]
+fn scan_supercmd_commands()->Vec<SuperCmdCommand>{
+    let root=supercmd_extensions_dir();let mut result=Vec::new();let Ok(entries)=fs::read_dir(root) else{return result};
+    for entry in entries.filter_map(Result::ok){let dir=entry.path();let Ok(raw)=fs::read_to_string(dir.join("package.json")) else{continue};let Ok(pkg)=serde_json::from_str::<serde_json::Value>(&raw) else{continue};
+        let fallback_name=entry.file_name().to_string_lossy().into_owned();let extension_name=pkg.get("name").and_then(|v|v.as_str()).unwrap_or(&fallback_name).to_owned();
+        let extension_title=pkg.get("title").and_then(|v|v.as_str()).unwrap_or(&extension_name).to_owned();let owner=pkg.get("owner").or_else(||pkg.get("author")).and_then(|v|if let Some(s)=v.as_str(){Some(s)}else{v.get("name").and_then(|n|n.as_str())}).map(str::to_owned);
+        let icon=pkg.get("icon").and_then(|v|v.as_str()).and_then(|p|file_data_url(&dir.join(p)));
+        let Some(commands)=pkg.get("commands").and_then(|v|v.as_array()) else{continue};for command in commands{let Some(command_name)=command.get("name").and_then(|v|v.as_str()) else{continue};let title=command.get("title").and_then(|v|v.as_str()).unwrap_or(command_name).to_owned();let description=command.get("description").and_then(|v|v.as_str()).unwrap_or("").to_owned();let mode=command.get("mode").and_then(|v|v.as_str()).unwrap_or("view").to_owned();result.push(SuperCmdCommand{id:format!("{extension_name}:{command_name}"),extension_name:extension_name.clone(),extension_title:extension_title.clone(),owner:owner.clone(),command_name:command_name.to_owned(),title,description,mode,icon:icon.clone()})}
+    }result.sort_by(|a,b|a.title.to_lowercase().cmp(&b.title.to_lowercase()));result
+}
+
+fn safe_supercmd_part(value:&str)->Result<&str,String>{if value.is_empty()||!value.chars().all(|c|c.is_ascii_alphanumeric()||matches!(c,'-'|'_'|'.'|'@')){Err("SuperCmd 命令标识无效".into())}else{Ok(value)}}
+fn open_uri(uri:&str)->Result<(),String>{#[cfg(target_os="macos")]let mut command={let mut c=Command::new("open");c.arg(uri);c};#[cfg(target_os="windows")]let mut command={let mut c=Command::new("cmd");c.args(["/C","start","",uri]);c};#[cfg(target_os="linux")]let mut command={let mut c=Command::new("xdg-open");c.arg(uri);c};command.spawn().map(|_|()).map_err(|e|e.to_string())}
+
+#[tauri::command]
+fn run_supercmd_command(owner:Option<String>,extension_name:String,command_name:String)->Result<(),String>{let extension_name=safe_supercmd_part(&extension_name)?;let command_name=safe_supercmd_part(&command_name)?;let uri=if let Some(owner)=owner.filter(|s|!s.is_empty()){format!("supercmd://extensions/{}/{extension_name}/{command_name}",safe_supercmd_part(&owner)?)}else{format!("supercmd://extensions/{extension_name}/{command_name}")};open_uri(&uri)}
+
+#[tauri::command]
+fn open_supercmd_store()->Result<bool,String>{let installed=supercmd_extensions_dir().parent().is_some_and(Path::exists)||cfg!(target_os="macos")&&Path::new("/Applications/SuperCmd.app").exists();if installed{open_uri("supercmd://commands/system-open-extension-store")?}else{open_uri("https://github.com/SuperCmdLabs/SuperCmd/releases/latest")?}Ok(installed)}
+
 #[tauri::command]
 fn set_tray_visible(app:tauri::AppHandle,visible:bool)->Result<(),String>{app.tray_by_id("main-tray").ok_or("未找到菜单栏图标")?.set_visible(visible).map_err(|e|e.to_string())}
 
@@ -205,7 +239,8 @@ fn apply_native_glass(window:&tauri::WebviewWindow)->tauri::Result<()>{
     ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
     if let Some(content)=ns_window.contentView(){
         let glass=NSGlassEffectView::initWithFrame(mtm.alloc(),content.frame());
-        glass.setStyle(NSGlassEffectViewStyle::Regular);
+        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        glass.setTintColor(None);
         glass.setCornerRadius(26.0);
         glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable|NSAutoresizingMaskOptions::ViewHeightSizable);
         glass.setContentView(Some(&content));
@@ -235,7 +270,7 @@ pub fn run() {
       })
       .on_menu_event(|app,event|match event.id().as_ref(){"show"=>show_launcher(app),"settings"=>{show_launcher(app);let _=app.emit("navigate-settings",());},"check_update"=>{show_launcher(app);let _=app.emit("check-update",());},"quit"=>app.exit(0),_=>{}})
       .on_window_event(|window,event| { if matches!(event,tauri::WindowEvent::Focused(false)) { let _=window.hide(); } })
-      .invoke_handler(tauri::generate_handler![scan_apps,launch_app,choose_folder,open_plugin_directory,clipboard_text,open_external_url,set_tray_visible,set_auto_start,get_auto_start,read_icon,load_app_icon,open_macos_permission,set_global_shortcut,suspend_global_shortcuts])
+      .invoke_handler(tauri::generate_handler![scan_apps,launch_app,choose_folder,open_plugin_directory,clipboard_text,open_external_url,set_tray_visible,set_auto_start,get_auto_start,read_icon,load_app_icon,open_macos_permission,set_global_shortcut,suspend_global_shortcuts,scan_supercmd_commands,run_supercmd_command,open_supercmd_store])
       .run(tauri::generate_context!()).expect("error while running Float Launcher");
 }
 

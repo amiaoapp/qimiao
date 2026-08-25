@@ -66,7 +66,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 v__VERSION__
           releaseBody: |
-            启喵跨平台安装包。
+            启喵 / Qimiao 跨平台安装包。
+
+            - SuperCmd / Raycast 扩展兼容桥与官方插件商店目录
+            - macOS 26+ 原生 Clear Liquid Glass 与改进的深色材质
+            - 中英文仓库说明与界面
+
+            SuperCmd commands are discovered and launched through the official SuperCmd runtime; SuperCmd itself is not bundled.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

@@ -1,4 +1,4 @@
-import type {AppItem} from "./types";
+import type {AppItem,SuperCmdCommand} from "./types";
 const isTauri=()=>"__TAURI_INTERNALS__" in window;
 export async function scanApps(extra:string[]):Promise<AppItem[]>{
   if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");return invoke("scan_apps",{extraDirs:extra});}
@@ -17,6 +17,9 @@ export async function openExternalUrl(url:string){if(isTauri()){const {invoke}=a
 export async function setTrayVisible(visible:boolean){if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");await invoke("set_tray_visible",{visible});}}
 export async function setAutoStart(enabled:boolean):Promise<boolean>{if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");return invoke("set_auto_start",{enabled});}return enabled;}
 export async function getAutoStart():Promise<boolean>{if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");return invoke("get_auto_start");}return false;}
+export async function scanSuperCmdCommands():Promise<SuperCmdCommand[]>{if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");return invoke("scan_supercmd_commands");}return [];}
+export async function runSuperCmdCommand(command:SuperCmdCommand):Promise<void>{if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");await invoke("run_supercmd_command",{owner:command.owner??null,extensionName:command.extensionName,commandName:command.commandName});}}
+export async function openSuperCmdStore():Promise<boolean>{if(isTauri()){const {invoke}=await import("@tauri-apps/api/core");return invoke("open_supercmd_store");}window.open("https://github.com/SuperCmdLabs/SuperCmd/releases/latest","_blank","noopener,noreferrer");return false;}
 const names=["Arc","Calendar","ChatGPT","Chrome","Discord","Figma","Finder","GitHub Desktop","Mail","Maps","Music","Notes","Notion","Photos","Raycast","Safari","Settings","Slack","Telegram","Terminal","Visual Studio Code","WeChat","Xcode","Zoom"];
 const colors=["#4f46e5","#ef4444","#111827","#fbbf24","#5865f2","#a855f7","#60a5fa","#24292f","#38bdf8","#34d399","#fb7185","#facc15"];
 export const demoApps:AppItem[]=names.map((name,i)=>({id:`demo-${i}`,name,path:`/Applications/${name}.app`,launchCount:Math.max(0,20-i),installedAt:Date.now()-i*86400000,favorite:i<5,category:i===7?"开发工具":undefined,icon:`${colors[i%colors.length]}|${name.slice(0,1)}`}));
