@@ -1,6 +1,6 @@
 [package]
 name = "qimao-launcher"
-version = "0.4.1"
+version = "0.5.0"
 description = "APP喵旗下的智能跨平台启动器"
 authors = ["APP喵"]
 edition = "2021"
@@ -27,5 +27,5 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep", "NSColor", "NSGlassEffectView", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSString"] }

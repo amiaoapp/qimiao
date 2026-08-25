@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD,Engine};
 use std::{collections::HashSet, fs, path::{Path, PathBuf}, process::Command, sync::{Mutex,atomic::{AtomicBool,Ordering}}, time::{Duration,Instant}};
 use tauri::{Emitter,Manager, menu::{MenuBuilder,MenuItemBuilder}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_autostart::ManagerExt as AutoStartManagerExt;
 use walkdir::WalkDir;
 
 #[derive(Debug, Serialize)]
@@ -149,6 +150,12 @@ fn open_external_url(url:String)->Result<(),String>{if !url.starts_with("https:/
 fn set_tray_visible(app:tauri::AppHandle,visible:bool)->Result<(),String>{app.tray_by_id("main-tray").ok_or("未找到菜单栏图标")?.set_visible(visible).map_err(|e|e.to_string())}
 
 #[tauri::command]
+fn set_auto_start(app:tauri::AppHandle,enabled:bool)->Result<bool,String>{let manager=app.autolaunch();if enabled{manager.enable()}else{manager.disable()}.map_err(|e|e.to_string())?;manager.is_enabled().map_err(|e|e.to_string())}
+
+#[tauri::command]
+fn get_auto_start(app:tauri::AppHandle)->Result<bool,String>{app.autolaunch().is_enabled().map_err(|e|e.to_string())}
+
+#[tauri::command]
 fn read_icon(path:String)->Result<String,String>{if !path.contains("miaoqi-icons")&&!path.contains("miaoqi-quicklook"){return Err("拒绝读取非图标缓存路径".into())}let bytes=fs::read(path).map_err(|e|e.to_string())?;Ok(format!("data:image/png;base64,{}",STANDARD.encode(bytes)))}
 
 #[tauri::command]
@@ -178,7 +185,34 @@ fn position_launcher(window:&tauri::WebviewWindow) {
     let _=window.set_position(tauri::PhysicalPosition::new(x,y));
 }
 
-fn toggle_launcher(app:&tauri::AppHandle){if let Some(w)=app.get_webview_window("main"){if w.is_visible().unwrap_or(false){let _=w.hide();}else{position_launcher(&w);let _=w.show();let _=w.set_focus();}}}
+fn show_launcher(app:&tauri::AppHandle){if let Some(w)=app.get_webview_window("main"){position_launcher(&w);let _=w.show();let _=w.set_focus();let _=app.emit("launcher-shown",());}}
+
+fn toggle_launcher(app:&tauri::AppHandle){if let Some(w)=app.get_webview_window("main"){if w.is_visible().unwrap_or(false){let _=w.hide();}else{show_launcher(app)}}}
+
+#[cfg(target_os="macos")]
+fn apply_native_glass(window:&tauri::WebviewWindow)->tauri::Result<()>{
+    use std::ffi::CStr;
+    use objc2::{MainThreadMarker,runtime::AnyClass};
+    use objc2_app_kit::{NSAutoresizingMaskOptions,NSColor,NSGlassEffectView,NSGlassEffectViewStyle,NSWindow};
+    use tauri::window::{Effect,EffectState,EffectsBuilder};
+    let class_name=CStr::from_bytes_with_nul(b"NSGlassEffectView\0").expect("valid class name");
+    let Some(mtm)=MainThreadMarker::new() else{return Ok(())};
+    if AnyClass::get(class_name).is_none(){
+        return window.set_effects(EffectsBuilder::new().effect(Effect::Popover).state(EffectState::Active).radius(24.0).build());
+    }
+    let ns_window=unsafe{&*(window.ns_window()? as *const NSWindow)};
+    ns_window.setOpaque(false);
+    ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
+    if let Some(content)=ns_window.contentView(){
+        let glass=NSGlassEffectView::initWithFrame(mtm.alloc(),content.frame());
+        glass.setStyle(NSGlassEffectViewStyle::Regular);
+        glass.setCornerRadius(24.0);
+        glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable|NSAutoresizingMaskOptions::ViewHeightSizable);
+        glass.setContentView(Some(&content));
+        ns_window.setContentView(Some(&glass));
+    }
+    Ok(())
+}
 
 fn colorful_tray_icon()->tauri::Result<tauri::image::Image<'static>>{tauri::image::Image::from_bytes(include_bytes!("../icons/tray-cat.png"))}
 
@@ -186,7 +220,7 @@ pub fn run() {
     let shortcut=Shortcut::new(Some(Modifiers::ALT),Code::Space);
     tauri::Builder::default()
       .manage(ShortcutRuntime::default())
-      .plugin(tauri_plugin_autostart::Builder::new().build())
+      .plugin(tauri_plugin_autostart::Builder::new().app_name("启喵").arg("--autostart").build())
       .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app,_,event| {
           if event.state()==ShortcutState::Pressed { let runtime=app.state::<ShortcutRuntime>();if runtime.double_control.load(Ordering::Relaxed){let Ok(mut last)=runtime.last_control.lock() else{return};let now=Instant::now();if !last.is_some_and(|previous|now.duration_since(previous)<Duration::from_millis(430)){*last=Some(now);return}*last=None;}toggle_launcher(app)}
       }).build())
@@ -197,11 +231,11 @@ pub fn run() {
           let show=MenuItemBuilder::with_id("show","显示启喵").build(app)?;let settings=MenuItemBuilder::with_id("settings","设置…").build(app)?;let update=MenuItemBuilder::with_id("check_update","检查更新…").build(app)?;let quit=MenuItemBuilder::with_id("quit","退出启喵").build(app)?;let menu=MenuBuilder::new(app).items(&[&show,&settings,&update,&quit]).build()?;
           let tray=TrayIconBuilder::with_id("main-tray").tooltip("启喵").menu(&menu).show_menu_on_left_click(false).icon(colorful_tray_icon()?).icon_as_template(false);
           tray.on_tray_icon_event(|tray,event|{if matches!(event,TrayIconEvent::Click{button:MouseButton::Left,button_state:MouseButtonState::Up,..}){toggle_launcher(tray.app_handle())}}).build(app)?;
-          if let Some(w)=app.get_webview_window("main"){position_launcher(&w)} Ok(())
+          if let Some(w)=app.get_webview_window("main"){position_launcher(&w);#[cfg(target_os="macos")]apply_native_glass(&w)?;if std::env::args().any(|arg|arg=="--autostart"){let _=w.hide();}else{let _=w.show();let _=w.set_focus();}} Ok(())
       })
-      .on_menu_event(|app,event|match event.id().as_ref(){"show"=>toggle_launcher(app),"settings"=>{toggle_launcher(app);let _=app.emit("navigate-settings",());},"check_update"=>{toggle_launcher(app);let _=app.emit("check-update",());},"quit"=>app.exit(0),_=>{}})
+      .on_menu_event(|app,event|match event.id().as_ref(){"show"=>show_launcher(app),"settings"=>{show_launcher(app);let _=app.emit("navigate-settings",());},"check_update"=>{show_launcher(app);let _=app.emit("check-update",());},"quit"=>app.exit(0),_=>{}})
       .on_window_event(|window,event| { if matches!(event,tauri::WindowEvent::Focused(false)) { let _=window.hide(); } })
-      .invoke_handler(tauri::generate_handler![scan_apps,launch_app,choose_folder,open_plugin_directory,clipboard_text,open_external_url,set_tray_visible,read_icon,load_app_icon,open_macos_permission,set_global_shortcut,suspend_global_shortcuts])
+      .invoke_handler(tauri::generate_handler![scan_apps,launch_app,choose_folder,open_plugin_directory,clipboard_text,open_external_url,set_tray_visible,set_auto_start,get_auto_start,read_icon,load_app_icon,open_macos_permission,set_global_shortcut,suspend_global_shortcuts])
       .run(tauri::generate_context!()).expect("error while running Float Launcher");
 }
 
