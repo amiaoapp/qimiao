@@ -25,6 +25,19 @@ export async function chooseFolder(): Promise<string | null> {
   }
   return null;
 }
+export async function chooseApp(): Promise<AppItem | null> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("choose_app");
+  }
+  return null;
+}
+export async function hideLauncher() {
+  if (isTauri()) {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().hide();
+  }
+}
 export async function setGlobalHotkey(
   accelerator: string,
   previousAccelerator?: string,
@@ -99,6 +112,12 @@ export async function getAutoStart(): Promise<boolean> {
     return invoke("get_auto_start");
   }
   return false;
+}
+export async function setWindowMaterial(material: string, dark: boolean) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_window_material", { material, dark });
+  }
 }
 export async function scanExtensionCommands(): Promise<ExtensionCommand[]> {
   if (isTauri()) {

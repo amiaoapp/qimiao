@@ -92,16 +92,15 @@ fn default_dirs() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        for key in [
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "APPDATA",
-            "PROGRAMDATA",
-        ] {
-            if let Some(v) = std::env::var_os(key) {
-                dirs.push(PathBuf::from(v));
-            }
+        if let Some(path) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(path).join("Microsoft/Windows/Start Menu/Programs"));
         }
+        if let Some(path) = std::env::var_os("PROGRAMDATA") {
+            dirs.push(PathBuf::from(path).join("Microsoft/Windows/Start Menu/Programs"));
+        }
+        // Desktop folders commonly contain document shortcuts. Automatic
+        // discovery intentionally stays inside the application-only Start Menu;
+        // standalone executables can be added explicitly from Settings.
     }
     #[cfg(target_os = "linux")]
     {
@@ -361,7 +360,40 @@ fn quicklook_icon(path: &Path, name: &str) -> String {
         .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
         .unwrap_or_else(|| color_for(name))
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn app_icon(path: &Path, name: &str) -> String {
+    let script = r#"
+$p = $args[0]
+try {
+  Add-Type -AssemblyName System.Drawing
+  if ([IO.Path]::GetExtension($p) -ieq '.lnk') {
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($p)
+    $iconPath = ($shortcut.IconLocation -split ',')[0]
+    if ($iconPath -and (Test-Path -LiteralPath $iconPath)) { $p = $iconPath }
+    elseif ($shortcut.TargetPath -and (Test-Path -LiteralPath $shortcut.TargetPath)) { $p = $shortcut.TargetPath }
+  }
+  $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($p)
+  if ($null -eq $icon) { exit 2 }
+  $stream = New-Object System.IO.MemoryStream
+  $bitmap = $icon.ToBitmap()
+  $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+  [Convert]::ToBase64String($stream.ToArray())
+} catch { exit 3 }
+"#;
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|encoded| encoded.trim().to_owned())
+        .filter(|encoded| !encoded.is_empty())
+        .map(|encoded| format!("data:image/png;base64,{encoded}"))
+        .unwrap_or_else(|| color_for(name))
+}
+
+#[cfg(target_os = "linux")]
 fn app_icon(_path: &Path, name: &str) -> String {
     color_for(name)
 }
@@ -443,28 +475,41 @@ fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
             if raw.is_empty() || raw.starts_with('.') || !seen.insert(raw.to_lowercase()) {
                 continue;
             }
-            let display_name = localized_app_name(path, &raw);
-            let canonical = path.to_string_lossy().to_string();
-            let id = format!("{:x}", Sha256::digest(canonical.as_bytes()));
-            let installed_at = fs::metadata(path)
-                .ok()
-                .and_then(|m| m.created().or_else(|_| m.modified()).ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64);
-            result.push(AppItem {
-                id,
-                name: display_name.clone(),
-                path: canonical.clone(),
-                icon: Some(format!("app:{canonical}")),
-                search_terms: format!("{} {}", display_name, raw),
-                installed_at,
-                launch_count: 0,
-                favorite: false,
-            });
+            if let Some(app) = app_item_from_path(path) {
+                result.push(app);
+            }
         }
     }
     result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     result
+}
+
+fn app_item_from_path(path: &Path) -> Option<AppItem> {
+    if !is_app(path) {
+        return None;
+    }
+    let raw = path.file_stem()?.to_string_lossy().to_string();
+    if raw.is_empty() || raw.starts_with('.') {
+        return None;
+    }
+    let display_name = localized_app_name(path, &raw);
+    let canonical = path.to_string_lossy().to_string();
+    let id = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    let installed_at = fs::metadata(path)
+        .ok()
+        .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    Some(AppItem {
+        id,
+        name: display_name.clone(),
+        path: canonical.clone(),
+        icon: Some(format!("app:{canonical}")),
+        search_terms: format!("{} {}", display_name, raw),
+        installed_at,
+        launch_count: 0,
+        favorite: false,
+    })
 }
 
 #[tauri::command]
@@ -502,6 +547,24 @@ fn choose_folder() -> Option<String> {
     rfd::FileDialog::new()
         .pick_folder()
         .map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn choose_app() -> Option<AppItem> {
+    let mut dialog = rfd::FileDialog::new();
+    #[cfg(target_os = "macos")]
+    {
+        dialog = dialog.add_filter("macOS 应用", &["app"]);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        dialog = dialog.add_filter("Windows 应用", &["exe", "lnk"]);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dialog = dialog.add_filter("Linux 应用", &["desktop"]);
+    }
+    dialog.pick_file().and_then(|path| app_item_from_path(&path))
 }
 
 #[tauri::command]
@@ -611,11 +674,10 @@ fn scan_extension_commands_in(root: &Path) -> Vec<ExtensionCommand> {
             continue;
         };
         let fallback_name = entry.file_name().to_string_lossy().into_owned();
-        let extension_name = pkg
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&fallback_name)
-            .to_owned();
+        // The directory name is Qimiao's stable installation id. A manifest
+        // package name can be scoped (for example @owner/name), which is not a
+        // safe path component and previously made run/uninstall fail.
+        let extension_name = fallback_name.clone();
         let extension_title = pkg
             .get("title")
             .and_then(|v| v.as_str())
@@ -715,7 +777,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("Qimiao/0.8")
+        .user_agent("Qimiao/0.9")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -754,7 +816,7 @@ async fn install_extension(
         urlencoding::encode(&name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("Qimiao/0.8")
+        .user_agent("Qimiao/0.9")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client
@@ -794,12 +856,16 @@ async fn install_extension(
                 return Err("扩展包包含不安全路径".into());
             }
         }
-        let source = fs::read_dir(&staging)
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| p.is_dir() && p.join("package.json").exists())
-            .ok_or("扩展包中缺少 package.json")?;
+        let source = if staging.join("package.json").exists() {
+            staging.clone()
+        } else {
+            fs::read_dir(&staging)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .find(|p| p.is_dir() && p.join("package.json").exists())
+                .ok_or("扩展包中缺少 package.json")?
+        };
         let target = install_root.join(&install_name);
         if target.exists() {
             fs::remove_dir_all(&target).map_err(|e| e.to_string())?
@@ -900,6 +966,55 @@ fn get_auto_start(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn set_window_material(
+    window: tauri::WebviewWindow,
+    material: String,
+    dark: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::window::{Color, Effect, EffectsBuilder};
+        if material == "solid" {
+            window.set_effects(None).map_err(|e| e.to_string())?;
+        } else {
+            let color = if dark {
+                Color(50, 59, 78, if material == "glass" { 120 } else { 88 })
+            } else {
+                Color(238, 244, 252, if material == "glass" { 112 } else { 76 })
+            };
+            window
+                .set_effects(
+                    EffectsBuilder::new()
+                        .effect(Effect::Acrylic)
+                        .color(color)
+                        .build(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSGlassEffectView, NSGlassEffectViewStyle, NSWindow};
+        let ns_window = unsafe { &*(window.ns_window().map_err(|e| e.to_string())? as *const NSWindow) };
+        if let Some(content) = ns_window.contentView() {
+            if let Some(glass) = content.downcast_ref::<NSGlassEffectView>() {
+                glass.setStyle(if material == "liquid" {
+                    NSGlassEffectViewStyle::Clear
+                } else {
+                    NSGlassEffectViewStyle::Regular
+                });
+            }
+        }
+        let _ = dark;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (window, material, dark);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn read_icon(path: String) -> Result<String, String> {
     if !path.contains("miaoqi-icons") && !path.contains("miaoqi-quicklook") {
         return Err("拒绝读取非图标缓存路径".into());
@@ -912,11 +1027,22 @@ fn read_icon(path: String) -> Result<String, String> {
 async fn load_app_icon(path: String, name: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let app = PathBuf::from(&path);
-        if !app.exists()
-            || !app
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("app"))
-        {
+        #[cfg(target_os = "macos")]
+        let valid = app
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("app"));
+        #[cfg(target_os = "windows")]
+        let valid = app.extension().is_some_and(|e| {
+            matches!(
+                e.to_string_lossy().to_ascii_lowercase().as_str(),
+                "exe" | "lnk"
+            )
+        });
+        #[cfg(target_os = "linux")]
+        let valid = app
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("desktop"));
+        if !app.exists() || !valid {
             return Err("无效的应用路径".into());
         }
         let icon = app_icon(&app, &name);
@@ -1136,6 +1262,11 @@ pub fn run() {
             })
             .build(app)?;
             if let Some(w) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = w.set_min_size(Some(tauri::LogicalSize::new(700.0, 476.0)));
+                    let _ = w.set_size(tauri::LogicalSize::new(870.0, 558.0));
+                }
                 position_launcher(&w);
                 #[cfg(target_os = "macos")]
                 apply_native_glass(&w)?;
@@ -1170,12 +1301,14 @@ pub fn run() {
             scan_apps,
             launch_app,
             choose_folder,
+            choose_app,
             open_plugin_directory,
             clipboard_text,
             open_external_url,
             set_tray_visible,
             set_auto_start,
             get_auto_start,
+            set_window_material,
             read_icon,
             load_app_icon,
             open_macos_permission,
@@ -1188,7 +1321,7 @@ pub fn run() {
             load_extension_command
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Float Launcher");
+        .expect("error while running Qimiao");
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1228,7 +1361,7 @@ mod tests {
         fs::create_dir_all(extension.join(".sc-build")).unwrap();
         fs::write(
             extension.join("package.json"),
-            r#"{"name":"hello-world","title":"Hello World","author":"Qimiao","commands":[{"name":"hello","title":"Hello","description":"A real Raycast-format command","mode":"view"}]}"#,
+            r#"{"name":"@community/hello-world","title":"Hello World","author":"Qimiao","commands":[{"name":"hello","title":"Hello","description":"A real Raycast-format command","mode":"view"}]}"#,
         )
         .unwrap();
         fs::write(

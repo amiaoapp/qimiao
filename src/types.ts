@@ -39,6 +39,11 @@ export type ExtensionCommand = {
   preferences: Array<{
     name: string;
     type?: string;
+    title?: string;
+    label?: string;
+    description?: string;
+    placeholder?: string;
+    required?: boolean;
     default?: unknown;
     data?: Array<{ title?: string; value?: string }>;
   }>;
@@ -74,7 +79,8 @@ export type Settings = {
   viewMode: ViewMode;
   sortBy: SortBy;
   categories: string[];
-  horizontal: boolean;
+  showRecommendations: boolean;
+  autoScanApps: boolean;
   scanOnLaunch: boolean;
   scanDirs: string[];
   hotkey: string;
@@ -93,8 +99,9 @@ export const defaultSettings: Settings = {
   viewMode: "grid",
   sortBy: "smart",
   categories: ["效率工具", "开发工具", "创意设计", "娱乐休闲"],
-  horizontal: false,
-  scanOnLaunch: true,
+  showRecommendations: true,
+  autoScanApps: false,
+  scanOnLaunch: false,
   scanDirs: [],
   hotkey: "Alt+Space",
   hideTray: false,

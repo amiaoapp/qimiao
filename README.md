@@ -16,7 +16,7 @@ Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app
 
 ## 功能 / Features
 
-- 自动扫描并启动系统应用；支持收藏、分类、中文、全拼与首字母搜索
+- 可选择自动扫描系统应用，也可完全关闭扫描并逐个添加应用；支持清空列表、收藏、分类、中文、全拼与首字母搜索
 - Launchpad 式分页、纵向列表、键盘二维导航与智能推荐行
 - macOS 26+ 原生 `NSGlassEffectView` 液态玻璃，旧系统与其他平台提供视觉回退
 - 自定义全局快捷键、菜单栏常驻、失焦隐藏、开机启动
@@ -27,7 +27,7 @@ Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app
 
 ---
 
-- Automatic application discovery, favorites, categories, Chinese/Pinyin/initial search
+- Optional automatic discovery or a fully manual app list, plus clear-list, favorites, categories, Chinese/Pinyin/initial search
 - Launchpad-style pagination, vertical list view, 2D keyboard navigation, smart recommendations
 - Native macOS 26+ `NSGlassEffectView` with polished fallbacks on older macOS, Windows, and Linux
 - Custom global hotkeys, menu-bar mode, blur-to-hide, launch at login

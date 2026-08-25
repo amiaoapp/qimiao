@@ -6,6 +6,7 @@ import {
   Copy,
   ExternalLink,
   Search,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import type { ExtensionBundle } from "./types";
@@ -269,13 +270,20 @@ export const Grid = Object.assign(GridRoot, {
   Dropdown: Object.assign(Dropdown, { Item: DropdownItem }),
 });
 
-function Detail(props: AnyProps) {
+function DetailRoot(props: AnyProps) {
   return (
     <div className="ray-detail">
       <article>{props.markdown ?? props.metadata ?? ""}</article>
     </div>
   );
 }
+const Metadata = Object.assign(Section, {
+  Label: Marker,
+  Link: Marker,
+  TagList: Object.assign(Section, { Item: Marker }),
+  Separator: Marker,
+});
+const Detail = Object.assign(DetailRoot, { Metadata });
 function FormRoot(props: AnyProps) {
   const fields = flatten(props.children).filter(
     (item) => (item.type as AnyProps).__qMarker === "form-field",
@@ -284,7 +292,8 @@ function FormRoot(props: AnyProps) {
     Object.fromEntries(
       fields.map((f) => [
         (f.props as AnyProps).id,
-        (f.props as AnyProps).defaultValue ?? "",
+        (f.props as AnyProps).defaultValue ??
+          ((f.type as AnyProps).__qDefaults?.type === "checkbox" ? false : ""),
       ]),
     ),
   );
@@ -299,7 +308,10 @@ function FormRoot(props: AnyProps) {
       }}
     >
       {fields.map((field, index) => {
-        const p = field.props as AnyProps;
+        const p = {
+          ...((field.type as AnyProps).__qDefaults ?? {}),
+          ...(field.props as AnyProps),
+        };
         const value = values[p.id] ?? "";
         return (
           <label key={p.id ?? index}>
@@ -331,19 +343,26 @@ function FormRoot(props: AnyProps) {
     </form>
   );
 }
-function FormField() {
-  return null;
-}
-(FormField as AnyProps).__qMarker = "form-field";
+const formField = (type: string) => {
+  const component = (_props: AnyProps) => null;
+  (component as AnyProps).__qMarker = "form-field";
+  (component as AnyProps).__qDefaults = { type };
+  return component;
+};
+const TextField = formField("text");
+const PasswordField = formField("password");
+const TextAreaField = formField("textarea");
+const CheckboxField = formField("checkbox");
+const DropdownField = formField("dropdown");
 export const Form = Object.assign(FormRoot, {
-  TextField: FormField,
-  PasswordField: FormField,
-  TextArea: FormField,
-  Checkbox: FormField,
-  Dropdown: Object.assign(FormField, { Item: DropdownItem }),
-  DatePicker: FormField,
-  FilePicker: FormField,
-  TagPicker: Object.assign(FormField, { Item: DropdownItem }),
+  TextField,
+  PasswordField,
+  TextArea: TextAreaField,
+  Checkbox: CheckboxField,
+  Dropdown: Object.assign(DropdownField, { Item: DropdownItem }),
+  DatePicker: formField("date"),
+  FilePicker: formField("file"),
+  TagPicker: Object.assign(formField("tags"), { Item: DropdownItem }),
   Separator: Marker,
   Description: Marker,
 });
@@ -419,7 +438,7 @@ const LocalStorage = {
   async setItem(key: string, value: unknown) {
     localStorage.setItem(
       `qimao-ext:${activeContext?.bundle.command.extensionName}:${key}`,
-      JSON.stringify(value),
+      String(value),
     );
   },
   async removeItem(key: string) {
@@ -479,13 +498,7 @@ const Image = {
   Mask: { Circle: "circle", RoundedRectangle: "roundedRectangle" },
 };
 function defaults() {
-  return Object.fromEntries(
-    (activeContext?.bundle.command.preferences ?? []).map((pref) => [
-      pref.name,
-      pref.default ??
-        (pref.type === "checkbox" ? false : (pref.data?.[0]?.value ?? "")),
-    ]),
-  );
+  return activeContext?.preferences ?? {};
 }
 function usePromise<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = React.useState<T>();
@@ -632,6 +645,66 @@ class EventEmitter {
     return true;
   }
 }
+class StreamShim extends EventEmitter {
+  readable = true;
+  writable = true;
+  pipe(destination: AnyProps) {
+    this.on("data", (chunk: unknown) => destination.write?.(chunk));
+    this.on("end", () => destination.end?.());
+    return destination;
+  }
+  write(chunk: unknown) {
+    this.emit("data", chunk);
+    return true;
+  }
+  end(chunk?: unknown) {
+    if (chunk !== undefined) this.write(chunk);
+    this.emit("end");
+  }
+  push(chunk: unknown) {
+    if (chunk === null) this.emit("end");
+    else this.emit("data", chunk);
+    return true;
+  }
+  static from(values: Iterable<unknown>) {
+    const stream = new StreamShim();
+    queueMicrotask(() => {
+      for (const value of values) stream.push(value);
+      stream.push(null);
+    });
+    return stream;
+  }
+}
+class StringDecoderShim {
+  decoder = new TextDecoder();
+  write(value: Uint8Array) {
+    return this.decoder.decode(value, { stream: true });
+  }
+  end(value?: Uint8Array) {
+    return value ? this.decoder.decode(value) : this.decoder.decode();
+  }
+}
+const processShim = {
+  env: {},
+  platform: navigator.platform.toLowerCase().includes("mac")
+    ? "darwin"
+    : navigator.platform.toLowerCase().includes("win")
+      ? "win32"
+      : "linux",
+  cwd: () => "/qimao-support",
+  nextTick: (fn: Function, ...args: unknown[]) =>
+    queueMicrotask(() => fn(...args)),
+  versions: {},
+};
+const cryptoShim = {
+  randomUUID: () => crypto.randomUUID(),
+  randomBytes: (size: number) => {
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    return new BufferPolyfill(bytes);
+  },
+  webcrypto: crypto,
+};
 function normalizePath(parts: string[]) {
   const out: string[] = [];
   parts
@@ -702,7 +775,29 @@ function extensionRequire(name: string) {
   if (name === "fs" || name === "node:fs") return fsShim;
   if (name === "path" || name === "node:path") return pathShim;
   if (name === "buffer") return { Buffer: BufferShim };
-  if (name === "events") return { EventEmitter, default: EventEmitter };
+  if (name === "events" || name === "node:events")
+    return { EventEmitter, default: EventEmitter };
+  if (name === "stream" || name === "node:stream")
+    return {
+      Stream: StreamShim,
+      Readable: StreamShim,
+      Writable: StreamShim,
+      Duplex: StreamShim,
+      Transform: StreamShim,
+      PassThrough: StreamShim,
+      default: StreamShim,
+    };
+  if (name === "string_decoder" || name === "node:string_decoder")
+    return { StringDecoder: StringDecoderShim };
+  if (name === "crypto" || name === "node:crypto") return cryptoShim;
+  if (name === "url" || name === "node:url")
+    return {
+      URL,
+      URLSearchParams,
+      parse: (value: string) => new URL(value),
+      format: (value: URL) => value.toString(),
+      pathToFileURL: (value: string) => new URL(`file://${value}`),
+    };
   if (name === "os")
     return {
       homedir: () => "/qimao-support",
@@ -734,23 +829,19 @@ function extensionRequire(name: string) {
         },
       },
     );
-  if (name === "node-fetch") return Object.assign(fetch, { default: fetch });
-  if (name === "process")
-    return {
-      env: {},
-      platform: navigator.platform.toLowerCase().includes("mac")
-        ? "darwin"
-        : "browser",
-      cwd: () => "/qimao-support",
-      nextTick: (fn: Function) => queueMicrotask(() => fn()),
-    };
+  if (name === "node-fetch")
+    return Object.assign(fetch, {
+      default: fetch,
+      Headers,
+      Request,
+      Response,
+      FetchError: Error,
+    });
+  if (name === "process" || name === "node:process") return processShim;
   if (
     [
       "child_process",
-      "stream",
-      "crypto",
       "zlib",
-      "url",
       "http",
       "https",
     ].includes(name)
@@ -764,9 +855,23 @@ function evaluate(bundle: ExtensionBundle) {
     "require",
     "module",
     "exports",
+    "process",
+    "Buffer",
+    "global",
+    "__dirname",
+    "__filename",
     `${bundle.code}\n//# sourceURL=qimao-extension-${bundle.command.id}.js`,
   );
-  wrapper(extensionRequire, module, module.exports);
+  wrapper(
+    extensionRequire,
+    module,
+    module.exports,
+    processShim,
+    BufferShim,
+    globalThis,
+    bundle.extensionPath,
+    `${bundle.extensionPath}/.sc-build/${bundle.command.commandName}.js`,
+  );
   const exported = module.exports?.default ?? module.exports;
   if (!exported) throw new Error("The extension command has no default export");
   return exported;
@@ -791,6 +896,97 @@ class RuntimeBoundary extends React.Component<
     );
   }
 }
+function initialPreferences(bundle: ExtensionBundle) {
+  const defaults = Object.fromEntries(
+    bundle.command.preferences.map((preference) => [
+      preference.name,
+      preference.default ??
+        (preference.type === "checkbox"
+          ? false
+          : (preference.data?.[0]?.value ?? "")),
+    ]),
+  );
+  try {
+    return {
+      ...defaults,
+      ...JSON.parse(
+        localStorage.getItem(
+          `qimao-ext-prefs:${bundle.command.extensionName}`,
+        ) ?? "{}",
+      ),
+    };
+  } catch {
+    return defaults;
+  }
+}
+function PreferenceEditor({
+  bundle,
+  values,
+  onChange,
+  onSave,
+}: {
+  bundle: ExtensionBundle;
+  values: Record<string, unknown>;
+  onChange: (values: Record<string, unknown>) => void;
+  onSave: () => void;
+}) {
+  return (
+    <form
+      className="ray-preferences"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave();
+      }}
+    >
+      <h2>Extension Preferences</h2>
+      <p>Configure the values required by this command.</p>
+      {bundle.command.preferences.map((preference) => (
+        <label key={preference.name}>
+          <span>
+            <strong>{preference.title ?? preference.label ?? preference.name}</strong>
+            {preference.description && <small>{preference.description}</small>}
+          </span>
+          {preference.type === "checkbox" ? (
+            <input
+              type="checkbox"
+              checked={Boolean(values[preference.name])}
+              onChange={(event) =>
+                onChange({
+                  ...values,
+                  [preference.name]: event.target.checked,
+                })
+              }
+            />
+          ) : preference.type === "dropdown" ? (
+            <select
+              value={String(values[preference.name] ?? "")}
+              onChange={(event) =>
+                onChange({ ...values, [preference.name]: event.target.value })
+              }
+            >
+              {(preference.data ?? []).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.title ?? option.value}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              required={preference.required}
+              type={preference.type === "password" ? "password" : "text"}
+              value={String(values[preference.name] ?? "")}
+              placeholder={preference.placeholder}
+              onChange={(event) =>
+                onChange({ ...values, [preference.name]: event.target.value })
+              }
+            />
+          )}
+        </label>
+      ))}
+      <button className="primary">Save and Run</button>
+    </form>
+  );
+}
 export function ExtensionRuntime({
   bundle,
   onClose,
@@ -800,21 +996,20 @@ export function ExtensionRuntime({
 }) {
   const [stack, setStack] = React.useState<React.ReactElement[]>([]);
   const [notice, setNotice] = React.useState("");
+  const [preferences, setPreferences] = React.useState<Record<string, unknown>>(
+    () => initialPreferences(bundle),
+  );
+  const [preferenceOpen, setPreferenceOpen] = React.useState(() => {
+    const initial = initialPreferences(bundle);
+    return bundle.command.preferences.some(
+      (preference) =>
+        preference.required &&
+        (initial[preference.name] === "" ||
+          initial[preference.name] === undefined),
+    );
+  });
   const assets = React.useMemo(
     () => new Map(bundle.assets.map((asset) => [asset.path, asset.data])),
-    [bundle],
-  );
-  const preferences = React.useMemo(
-    () =>
-      Object.fromEntries(
-        bundle.command.preferences.map((preference) => [
-          preference.name,
-          preference.default ??
-            (preference.type === "checkbox"
-              ? false
-              : (preference.data?.[0]?.value ?? "")),
-        ]),
-      ),
     [bundle],
   );
   const context = React.useMemo<RuntimeContext>(
@@ -845,12 +1040,16 @@ export function ExtensionRuntime({
   }, [bundle]);
   const { Component, error } = evaluated;
   React.useEffect(() => {
-    if (bundle.command.mode !== "no-view" || typeof Component !== "function")
+    if (
+      preferenceOpen ||
+      bundle.command.mode !== "no-view" ||
+      typeof Component !== "function"
+    )
       return;
     Promise.resolve(Component())
       .then(() => context.notify("Command completed"))
       .catch((reason) => context.notify(String(reason)));
-  }, [bundle, Component]);
+  }, [bundle, Component, preferenceOpen]);
   const current = stack[stack.length - 1];
   return (
     <Context.Provider value={context}>
@@ -863,17 +1062,38 @@ export function ExtensionRuntime({
           >
             <ArrowLeft />
           </button>
-          {bundle.command.icon && <img src={bundle.command.icon} />}
+          <span className="ray-command-icon">
+            {bundle.command.icon ? <img src={bundle.command.icon} /> : "⌁"}
+          </span>
           <div>
             <strong>{bundle.command.title}</strong>
             <small>{bundle.command.extensionTitle} · Raycast compatible</small>
           </div>
+          <button
+            title="Extension preferences"
+            onClick={() => setPreferenceOpen((open) => !open)}
+          >
+            <SlidersHorizontal />
+          </button>
           <button onClick={onClose}>
             <X />
           </button>
         </header>
-        <RuntimeBoundary>
-          {error ? (
+        <RuntimeBoundary key={bundle.command.id}>
+          {preferenceOpen ? (
+            <PreferenceEditor
+              bundle={bundle}
+              values={preferences}
+              onChange={setPreferences}
+              onSave={() => {
+                localStorage.setItem(
+                  `qimao-ext-prefs:${bundle.command.extensionName}`,
+                  JSON.stringify(preferences),
+                );
+                setPreferenceOpen(false);
+              }}
+            />
+          ) : error ? (
             <div className="ray-error">
               <strong>Extension Error</strong>
               <p>{error}</p>

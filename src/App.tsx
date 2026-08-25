@@ -40,9 +40,11 @@ import {
   type ExtensionCatalogEntry,
 } from "./types";
 import {
+  chooseApp,
   chooseFolder,
   fetchExtensionCatalog,
   getAutoStart,
+  hideLauncher,
   installExtension,
   launchApp,
   loadAppIcon,
@@ -57,6 +59,7 @@ import {
   setAutoStart,
   setGlobalHotkey,
   setTrayVisible,
+  setWindowMaterial,
   suspendGlobalHotkeys,
   uninstallExtension,
 } from "./tauri";
@@ -77,6 +80,20 @@ const save = (key: string, value: unknown) => {
     console.warn(`无法保存 ${key}`, error);
   }
 };
+const newerVersion = (latest: string, current: string) => {
+  const parts = (value: string) =>
+    value
+      .replace(/^v/, "")
+      .split(".")
+      .map((part) => Number.parseInt(part, 10) || 0);
+  const a = parts(latest),
+    b = parts(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
+    if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
+  }
+  return false;
+};
 const loadApps = (): AppItem[] =>
   load<AppItem[]>("float-apps", []).map((app) => ({
     ...app,
@@ -87,7 +104,7 @@ const persistApps = (apps: AppItem[]) =>
     "float-apps",
     apps.map(({ icon, ...metadata }) => metadata),
   );
-const APP_VERSION = "0.8.0";
+const APP_VERSION = "0.9.0";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 const pluginNames: Record<
@@ -125,6 +142,10 @@ export default function App() {
   const [pluginResult, setPluginResult] = useState("");
   const [pluginBusy, setPluginBusy] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<{
+    version: string;
+    url: string;
+  } | null>(null);
   const [extensionCommands, setExtensionCommands] = useState<
     ExtensionCommand[]
   >([]);
@@ -184,6 +205,11 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     document.documentElement.dataset.material = settings.material;
+    const dark =
+      settings.theme === "dark" ||
+      (settings.theme === "system" &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    void setWindowMaterial(settings.material, dark).catch(() => {});
     save("float-settings", settings);
   }, [settings]);
   useEffect(() => {
@@ -213,21 +239,50 @@ export default function App() {
       .catch(() => setExtensionCommands([]));
   }, []);
   useEffect(() => {
-    if (!apps.length || settings.scanOnLaunch || apps.some((app) => !app.icon))
+    if (
+      settings.autoScanApps &&
+      (!apps.length || settings.scanOnLaunch || apps.some((app) => !app.icon))
+    )
       refresh();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
+        if (activeExtension) {
+          setActiveExtension(null);
+          return;
+        }
+        if (categoryManager) {
+          setCategoryManager(false);
+          return;
+        }
+        if (aboutOpen) {
+          setAboutOpen(false);
+          return;
+        }
+        if (availableUpdate) {
+          setAvailableUpdate(null);
+          return;
+        }
+        if (page !== "home") {
+          setPage("home");
+          return;
+        }
+        if (menu || query || pluginMode) {
+          setMenu(null);
+          setQuery("");
+          setPluginMode(null);
+          setPluginResult("");
+          return;
+        }
         setMenu(null);
-        setQuery("");
-        setPluginMode(null);
-        setPluginResult("");
+        void hideLauncher();
       }
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, []);
+  }, [activeExtension, categoryManager, aboutOpen, availableUpdate, page, menu, query, pluginMode]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -328,7 +383,8 @@ export default function App() {
                 : smartScore(b) - smartScore(a),
     );
   }, [apps, query, mode, settings.sortBy, category]);
-  const showRecommended = !query && mode === "apps";
+  const showRecommended =
+    settings.showRecommendations && !query && mode === "apps";
   const libraryApps = showRecommended
     ? visible.filter((a) => !recommended.some((r) => r.id === a.id))
     : visible;
@@ -365,12 +421,13 @@ export default function App() {
     await launchApp(app.path);
     showToast(`正在打开 ${app.name}`);
   }
-  async function checkForUpdates() {
-    showToast(
-      settings.language === "en"
-        ? "Checking for updates…"
-        : `正在检查更新（当前 ${APP_VERSION}）…`,
-    );
+  async function checkForUpdates(silent = false) {
+    if (!silent)
+      showToast(
+        settings.language === "en"
+          ? "Checking for updates…"
+          : `正在检查更新（当前 ${APP_VERSION}）…`,
+      );
     try {
       const response = await fetch(
         "https://api.github.com/repos/amiaoapp/qimiao/releases/latest",
@@ -382,22 +439,15 @@ export default function App() {
         html_url?: string;
       };
       const latest = (release.tag_name ?? "").replace(/^v/, "");
-      if (latest && latest !== APP_VERSION) {
+      if (latest && newerVersion(latest, APP_VERSION)) {
+        if (release.html_url)
+          setAvailableUpdate({ version: latest, url: release.html_url });
         showToast(
           settings.language === "en"
             ? `Version ${latest} is available`
             : `发现新版本 ${latest}`,
         );
-        if (
-          release.html_url &&
-          confirm(
-            settings.language === "en"
-              ? "Open the download page?"
-              : "是否打开下载页面？",
-          )
-        )
-          void openExternalUrl(release.html_url);
-      } else
+      } else if (!silent)
         showToast(
           settings.language === "en"
             ? "Qimiao is up to date"
@@ -410,6 +460,24 @@ export default function App() {
           : `检查更新失败：${String(error)}`,
       );
     }
+  }
+  useEffect(() => {
+    const timer = window.setTimeout(() => void checkForUpdates(true), 1800);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function addManualApp() {
+    const selected = await chooseApp();
+    if (!selected) return;
+    setApps((current) => {
+      if (current.some((app) => app.path === selected.path)) return current;
+      return [...current, selected];
+    });
+    showToast(
+      settings.language === "en"
+        ? `Added ${selected.name}`
+        : `已添加 ${selected.name}`,
+    );
   }
   async function runPlugin() {
     if (!pluginMode) return;
@@ -851,6 +919,16 @@ export default function App() {
                 settings={settings}
                 update={updateSettings}
                 refresh={refresh}
+                onAddApp={() => void addManualApp()}
+                onClearApps={() => {
+                  setApps([]);
+                  setAppPage(0);
+                  showToast(
+                    settings.language === "en"
+                      ? "Application list cleared"
+                      : "已清空应用列表",
+                  );
+                }}
                 onCheckUpdate={() => void checkForUpdates()}
                 onAbout={() => setAboutOpen(true)}
               />
@@ -941,6 +1019,14 @@ export default function App() {
         <AboutDialog
           language={settings.language}
           onClose={() => setAboutOpen(false)}
+        />
+      )}
+      {availableUpdate && (
+        <UpdateDialog
+          language={settings.language}
+          version={availableUpdate.version}
+          onClose={() => setAvailableUpdate(null)}
+          onDownload={() => void openExternalUrl(availableUpdate.url)}
         />
       )}
       {toast && (
@@ -1441,12 +1527,16 @@ function SettingsPage({
   settings,
   update,
   refresh,
+  onAddApp,
+  onClearApps,
   onCheckUpdate,
   onAbout,
 }: {
   settings: Settings;
   update: (p: Partial<Settings>) => void;
   refresh: () => void;
+  onAddApp: () => void;
+  onClearApps: () => void;
   onCheckUpdate: () => void;
   onAbout: () => void;
 }) {
@@ -1525,20 +1615,30 @@ function SettingsPage({
           />
         </div>
         <ToggleRow
-          title={en ? "Horizontal paging" : "横向滚动"}
+          title={en ? "Show recommendations" : "显示推荐应用"}
           desc={
             en
-              ? "Arrange the app grid as horizontal pages"
-              : "应用网格按页面横向排列"
+              ? "Show recently used, frequently used and newly installed apps in the first row"
+              : "在第一行显示近期、常用与新安装应用"
           }
-          checked={settings.horizontal}
-          onChange={(v) => update({ horizontal: v })}
+          checked={settings.showRecommendations}
+          onChange={(v) => update({ showRecommendations: v })}
         />
       </SettingSection>
       <SettingSection
         icon={<ScanSearch />}
         title={en ? "App scanning" : "应用扫描"}
       >
+        <ToggleRow
+          title={en ? "Automatically scan system apps" : "自动扫描系统应用"}
+          desc={
+            en
+              ? "Turn this off to maintain a small launcher list manually"
+              : "关闭后可只维护自己手动添加的小型应用列表"
+          }
+          checked={settings.autoScanApps}
+          onChange={(enabled) => update({ autoScanApps: enabled })}
+        />
         <ToggleRow
           title={en ? "Scan at launch" : "启动时扫描"}
           desc={
@@ -1549,13 +1649,45 @@ function SettingsPage({
           checked={settings.scanOnLaunch}
           onChange={(v) => update({ scanOnLaunch: v })}
         />
+        <div className="setting-row">
+          <div>
+            <strong>{en ? "Manual application list" : "手动管理应用"}</strong>
+            <span>
+              {en
+                ? "Add one executable or shortcut at a time, or clear the current list"
+                : "逐个添加应用、可执行文件或快捷方式，也可一次清空当前列表"}
+            </span>
+          </div>
+          <div className="setting-actions">
+            <button className="secondary" onClick={onAddApp}>
+              <Plus />
+              {en ? "Add app" : "添加应用"}
+            </button>
+            <button
+              className="secondary danger-text"
+              onClick={() => {
+                if (
+                  confirm(
+                    en
+                      ? "Clear the entire application list?"
+                      : "确定清空整个应用列表吗？",
+                  )
+                )
+                  onClearApps();
+              }}
+            >
+              <Trash2 />
+              {en ? "Clear list" : "清空列表"}
+            </button>
+          </div>
+        </div>
         <div className="setting-row column">
           <div>
             <strong>{en ? "Additional folders" : "额外扫描目录"}</strong>
             <span>
               {en
-                ? "System application folders are always scanned"
-                : "系统默认目录会始终扫描"}
+                ? "Included when you scan manually or enable automatic scanning"
+                : "手动刷新或开启自动扫描时，会一并扫描这些目录"}
             </span>
           </div>
           <div className="dir-list">
@@ -1953,6 +2085,7 @@ function PluginsPage({
     setInstalling(name);
     try {
       onCommands(await installExtension(name));
+      setTab("installed");
     } catch (error) {
       alert(
         `${en ? "Extension installation failed" : "扩展安装失败"}：${String(error)}`,
@@ -1968,7 +2101,24 @@ function PluginsPage({
       )
     )
       return;
-    onCommands(await uninstallExtension(name));
+    try {
+      onCommands(await uninstallExtension(name));
+      Object.keys(localStorage)
+        .filter(
+          (key) =>
+            key.includes(`:${name}:`) || key.endsWith(`:${name}`),
+        )
+        .forEach((key) => localStorage.removeItem(key));
+    } catch (error) {
+      alert(`${en ? "Uninstall failed" : "卸载失败"}：${String(error)}`);
+    }
+  }
+  async function run(command: ExtensionCommand) {
+    try {
+      await onRun(command);
+    } catch (error) {
+      alert(`${en ? "Extension failed to start" : "扩展启动失败"}：${String(error)}`);
+    }
   }
   useEffect(() => {
     if (tab === "store" && !store.length) void loadStore();
@@ -2047,9 +2197,9 @@ function PluginsPage({
                   role="button"
                   tabIndex={0}
                   key={command.id}
-                  onClick={() => void onRun(command)}
+                  onClick={() => void run(command)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") void onRun(command);
+                    if (event.key === "Enter") void run(command);
                   }}
                 >
                   {command.icon ? <img src={command.icon} /> : <span>⌁</span>}
@@ -2129,7 +2279,11 @@ function PluginsPage({
                 <button
                   className="secondary"
                   disabled={installing === item.name}
-                  onClick={() => void install(item.name)}
+                  onClick={() =>
+                    void (installedNames.has(item.name)
+                      ? remove(item.name)
+                      : install(item.name))
+                  }
                 >
                   {installing === item.name
                     ? en
@@ -2137,8 +2291,8 @@ function PluginsPage({
                       : "安装中…"
                     : installedNames.has(item.name)
                       ? en
-                        ? "Reinstall"
-                        : "重新安装"
+                        ? "Uninstall"
+                        : "卸载"
                       : en
                         ? "Install in Qimiao"
                         : "安装到启喵"}
@@ -2459,6 +2613,46 @@ function AboutDialog({
           <ChevronRight />
           {en ? "View on GitHub" : "访问 GitHub"}
         </button>
+      </section>
+    </>
+  );
+}
+function UpdateDialog({
+  language,
+  version,
+  onClose,
+  onDownload,
+}: {
+  language: Settings["language"];
+  version: string;
+  onClose: () => void;
+  onDownload: () => void;
+}) {
+  const en = language === "en";
+  return (
+    <>
+      <div className="scrim category-scrim" onClick={onClose} />
+      <section className="about-dialog update-dialog">
+        <button className="about-close" onClick={onClose}>
+          <X />
+        </button>
+        <img src={appIconUrl} alt="启喵" />
+        <h2>{en ? "A new version is available" : "发现启喵新版本"}</h2>
+        <strong>v{version}</strong>
+        <p>
+          {en
+            ? `You are using v${APP_VERSION}. Open GitHub Releases to download the installer for this system.`
+            : `当前版本为 v${APP_VERSION}。前往 GitHub Releases 下载适合当前系统的安装包。`}
+        </p>
+        <div className="update-actions">
+          <button className="secondary" onClick={onClose}>
+            {en ? "Later" : "稍后"}
+          </button>
+          <button className="primary" onClick={onDownload}>
+            <ChevronRight />
+            {en ? "Download update" : "前往下载"}
+          </button>
+        </div>
       </section>
     </>
   );
