@@ -104,7 +104,7 @@ const persistApps = (apps: AppItem[]) =>
     "float-apps",
     apps.map(({ icon, ...metadata }) => metadata),
   );
-const APP_VERSION = "0.9.0";
+const APP_VERSION = "0.9.1";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 const pluginNames: Record<
@@ -2095,12 +2095,7 @@ function PluginsPage({
     }
   }
   async function remove(name: string) {
-    if (
-      !confirm(
-        en ? `Uninstall the ${name} extension?` : `确定卸载扩展「${name}」吗？`,
-      )
-    )
-      return;
+    setInstalling(name);
     try {
       onCommands(await uninstallExtension(name));
       Object.keys(localStorage)
@@ -2111,6 +2106,8 @@ function PluginsPage({
         .forEach((key) => localStorage.removeItem(key));
     } catch (error) {
       alert(`${en ? "Uninstall failed" : "卸载失败"}：${String(error)}`);
+    } finally {
+      setInstalling(null);
     }
   }
   async function run(command: ExtensionCommand) {
@@ -2214,6 +2211,7 @@ function PluginsPage({
                   <button
                     className="extension-remove"
                     title={en ? "Uninstall" : "卸载"}
+                    disabled={installing === command.extensionName}
                     onClick={(event) => {
                       event.stopPropagation();
                       void remove(command.extensionName);

@@ -798,12 +798,21 @@ function extensionRequire(name: string) {
       format: (value: URL) => value.toString(),
       pathToFileURL: (value: string) => new URL(`file://${value}`),
     };
-  if (name === "os")
+  if (name === "os" || name === "node:os")
     return {
       homedir: () => "/qimao-support",
       tmpdir: () => "/tmp",
       platform: () =>
         navigator.platform.toLowerCase().includes("mac") ? "darwin" : "browser",
+      arch: () => "x64",
+      type: () => "Qimiao",
+      release: () => "0.9.1",
+      hostname: () => "localhost",
+      endianness: () => "LE",
+      cpus: () => [],
+      userInfo: () => ({ username: "qimao", homedir: "/qimao-support" }),
+      networkInterfaces: () => ({}),
+      constants: { signals: {}, errno: {}, priority: {} },
       EOL: "\n",
     };
   if (name === "util")
