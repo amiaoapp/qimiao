@@ -198,7 +198,7 @@ fn apply_native_glass(window:&tauri::WebviewWindow)->tauri::Result<()>{
     let class_name=CStr::from_bytes_with_nul(b"NSGlassEffectView\0").expect("valid class name");
     let Some(mtm)=MainThreadMarker::new() else{return Ok(())};
     if AnyClass::get(class_name).is_none(){
-        return window.set_effects(EffectsBuilder::new().effect(Effect::Popover).state(EffectState::Active).radius(24.0).build());
+        return window.set_effects(EffectsBuilder::new().effect(Effect::Popover).state(EffectState::Active).radius(26.0).build());
     }
     let ns_window=unsafe{&*(window.ns_window()? as *const NSWindow)};
     ns_window.setOpaque(false);
@@ -206,7 +206,7 @@ fn apply_native_glass(window:&tauri::WebviewWindow)->tauri::Result<()>{
     if let Some(content)=ns_window.contentView(){
         let glass=NSGlassEffectView::initWithFrame(mtm.alloc(),content.frame());
         glass.setStyle(NSGlassEffectViewStyle::Regular);
-        glass.setCornerRadius(24.0);
+        glass.setCornerRadius(26.0);
         glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable|NSAutoresizingMaskOptions::ViewHeightSizable);
         glass.setContentView(Some(&content));
         ns_window.setContentView(Some(&glass));
