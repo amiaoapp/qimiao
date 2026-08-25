@@ -22,8 +22,8 @@ Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app
 - 自定义全局快捷键、菜单栏常驻、失焦隐藏、开机启动
 - OpenAI Compatible AI 查询与翻译
 - 中英文界面
-- SuperCmd 兼容桥：读取已安装的 SuperCmd / Raycast 扩展命令，在启喵中搜索并通过官方 SuperCmd 运行时执行
-- 内置 SuperCmd 扩展商店目录，支持从官方商店继续安装扩展
+- 启喵原生扩展运行时：直接下载、安装、索引和运行 Raycast 格式扩展，不调用 SuperCmd 或 Raycast 程序
+- 内置扩展商店、快捷触发键、插件资源与本地存储；支持 List、Grid、Detail、Form、Action 等常用 Raycast API
 
 ---
 
@@ -33,16 +33,16 @@ Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app
 - Custom global hotkeys, menu-bar mode, blur-to-hide, launch at login
 - OpenAI-compatible AI search and translation
 - Chinese and English interface
-- SuperCmd compatibility bridge for discovering and launching installed SuperCmd/Raycast extension commands
-- Built-in access to the official SuperCmd extension catalog
+- First-party extension runtime that installs and runs Raycast-format bundles inside Qimiao without launching SuperCmd or Raycast
+- Built-in extension catalog, command triggers, assets, local storage, and common Raycast APIs including List, Grid, Detail, Form, and Action
 
-## SuperCmd 兼容说明 / Compatibility
+## 扩展兼容说明 / Extension compatibility
 
-启喵不会把 Electron/Node 运行时打进 Tauri 安装包。扩展命令由用户安装的 SuperCmd 官方运行时执行，因此可继续使用 SuperCmd 的 Raycast API 兼容层、权限和插件数据。若尚未安装 SuperCmd，启喵会打开其官方下载页。
+启喵把扩展安装到自己的应用数据目录，并在 Tauri WebView 内通过受控的 React / Raycast API 兼容层运行预构建扩展包。当前优先兼容 UI、网络、剪贴板、资源读取和本地存储类扩展；依赖未实现 Node 原生模块或特定 macOS 自动化能力的命令会显示清晰的兼容性错误，不会静默调用其他启动器。
 
-Qimiao keeps its Tauri architecture and delegates compatible extension execution to an installed official SuperCmd runtime. This preserves SuperCmd's Raycast API shim, permissions, and extension data without embedding a second desktop runtime.
+Qimiao installs extensions into its own app-data directory and executes prebuilt bundles through a controlled React/Raycast API layer inside the Tauri WebView. UI, network, clipboard, asset, and local-storage extensions are the initial compatibility focus. Commands that need unsupported native Node modules or macOS automation surface an explicit compatibility error and never delegate to another launcher.
 
-SuperCmd is an independent MIT-licensed project. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The extension manifest and bundle format are compatible with the Raycast ecosystem. The community catalog currently follows the public SuperCmd catalog contract. SuperCmd is an independent MIT-licensed project; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## 开发 / Development
 

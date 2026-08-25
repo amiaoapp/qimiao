@@ -1,6 +1,6 @@
 [package]
 name = "qimao-launcher"
-version = "0.7.0"
+version = "0.8.0"
 description = "APP喵旗下的智能跨平台启动器"
 authors = ["APP喵"]
 edition = "2021"
@@ -24,6 +24,10 @@ sha2 = "0.10"
 base64 = "0.22"
 plist = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
+flate2 = "1"
+tar = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+urlencoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

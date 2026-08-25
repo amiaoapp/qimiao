@@ -1,10 +1,113 @@
-export type AppItem={id:string;name:string;path:string;icon?:string;searchTerms?:string;lastUsed?:number;installedAt?:number;launchCount:number;favorite:boolean;category?:string};
-export type Theme="system"|"light"|"dark";
-export type Material="glass"|"liquid"|"solid";
-export type ViewMode="grid"|"list";
-export type SortBy="smart"|"nameAsc"|"nameDesc"|"recentUsed"|"recentInstalled"|"mostUsed";
-export type PluginKind="calculator"|"clipboard"|"links"|"translate"|"supercmd";
-export type SuperCmdCommand={id:string;extensionName:string;extensionTitle:string;owner?:string;commandName:string;title:string;description:string;mode:string;icon?:string};
-export type SuperCmdCatalogEntry={id:string;name:string;title:string;description:string;author:string;owner?:string;iconUrl?:string;platforms:string[];installCount:number;commands:Array<{name:string;title:string;description?:string;mode:string}>};
-export type Settings={language:"zh"|"en";theme:Theme;material:Material;viewMode:ViewMode;sortBy:SortBy;categories:string[];horizontal:boolean;scanOnLaunch:boolean;scanDirs:string[];hotkey:string;hideTray:boolean;autoStart:boolean;aiProvider:string;aiEndpoint:string;aiModel:string;apiKey:string;pluginShortcuts:Record<PluginKind,string>};
-export const defaultSettings:Settings={language:"zh",theme:"system",material:"liquid",viewMode:"grid",sortBy:"smart",categories:["效率工具","开发工具","创意设计","娱乐休闲"],horizontal:false,scanOnLaunch:true,scanDirs:[],hotkey:"Alt+Space",hideTray:false,autoStart:false,aiProvider:"OpenAI Compatible",aiEndpoint:"https://api.openai.com/v1/chat/completions",aiModel:"gpt-4o-mini",apiKey:"",pluginShortcuts:{calculator:"=",clipboard:"V",links:"L",translate:"T",supercmd:"S"}};
+export type AppItem = {
+  id: string;
+  name: string;
+  path: string;
+  icon?: string;
+  searchTerms?: string;
+  lastUsed?: number;
+  installedAt?: number;
+  launchCount: number;
+  favorite: boolean;
+  category?: string;
+};
+export type Theme = "system" | "light" | "dark";
+export type Material = "glass" | "liquid" | "solid";
+export type ViewMode = "grid" | "list";
+export type SortBy =
+  | "smart"
+  | "nameAsc"
+  | "nameDesc"
+  | "recentUsed"
+  | "recentInstalled"
+  | "mostUsed";
+export type PluginKind =
+  | "calculator"
+  | "clipboard"
+  | "links"
+  | "translate"
+  | "supercmd";
+export type ExtensionCommand = {
+  id: string;
+  extensionName: string;
+  extensionTitle: string;
+  owner?: string;
+  commandName: string;
+  title: string;
+  description: string;
+  mode: string;
+  icon?: string;
+  preferences: Array<{
+    name: string;
+    type?: string;
+    default?: unknown;
+    data?: Array<{ title?: string; value?: string }>;
+  }>;
+};
+export type ExtensionAsset = { path: string; data: string };
+export type ExtensionBundle = {
+  command: ExtensionCommand;
+  code: string;
+  assets: ExtensionAsset[];
+  extensionPath: string;
+};
+export type ExtensionCatalogEntry = {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  author: string;
+  owner?: string;
+  iconUrl?: string;
+  platforms: string[];
+  installCount: number;
+  commands: Array<{
+    name: string;
+    title: string;
+    description?: string;
+    mode: string;
+  }>;
+};
+export type Settings = {
+  language: "zh" | "en";
+  theme: Theme;
+  material: Material;
+  viewMode: ViewMode;
+  sortBy: SortBy;
+  categories: string[];
+  horizontal: boolean;
+  scanOnLaunch: boolean;
+  scanDirs: string[];
+  hotkey: string;
+  hideTray: boolean;
+  autoStart: boolean;
+  aiProvider: string;
+  aiEndpoint: string;
+  aiModel: string;
+  apiKey: string;
+  pluginShortcuts: Record<PluginKind, string>;
+};
+export const defaultSettings: Settings = {
+  language: "zh",
+  theme: "system",
+  material: "liquid",
+  viewMode: "grid",
+  sortBy: "smart",
+  categories: ["效率工具", "开发工具", "创意设计", "娱乐休闲"],
+  horizontal: false,
+  scanOnLaunch: true,
+  scanDirs: [],
+  hotkey: "Alt+Space",
+  hideTray: false,
+  autoStart: false,
+  aiProvider: "OpenAI Compatible",
+  aiEndpoint: "https://api.openai.com/v1/chat/completions",
+  aiModel: "gpt-4o-mini",
+  apiKey: "",
+  pluginShortcuts: {
+    calculator: "=",
+    clipboard: "V",
+    links: "L",
+    translate: "T",
+    supercmd: "S",
+  },
+};

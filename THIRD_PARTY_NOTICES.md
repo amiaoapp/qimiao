@@ -2,7 +2,7 @@
 
 ## SuperCmd
 
-Qimiao includes an independently implemented compatibility bridge for the SuperCmd extension manifest, catalog endpoints, and public deep-link interface. SuperCmd itself is not bundled with Qimiao.
+Qimiao independently implements a runtime for Raycast-format extension manifests and consumes the public SuperCmd extension catalog and prebuilt bundle contract. Qimiao does not bundle, launch, or require the SuperCmd application.
 
 SuperCmd is licensed under the MIT License:
 

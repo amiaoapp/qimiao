@@ -68,11 +68,13 @@ jobs:
           releaseBody: |
             启喵 / Qimiao 跨平台安装包。
 
-            - SuperCmd / Raycast 扩展兼容桥与官方插件商店目录
+            - 启喵原生 Raycast 格式扩展运行时：直接安装和运行，不调用 SuperCmd / Raycast 程序
+            - 内置扩展商店、命令索引，以及常用 List / Grid / Detail / Form / Action API 兼容层
+            - 统一的右上角线性操作图标与交互底板
             - macOS 26+ 原生 Clear Liquid Glass 与改进的深色材质
             - 中英文仓库说明与界面
 
-            SuperCmd commands are discovered and launched through the official SuperCmd runtime; SuperCmd itself is not bundled.
+            Extensions are installed into Qimiao's own data directory and executed by Qimiao's built-in compatibility runtime. No external launcher is required or invoked.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

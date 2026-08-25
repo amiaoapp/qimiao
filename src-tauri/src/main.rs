@@ -1,2 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-fn main() { miaoqi_launcher_lib::run(); }
+fn main() {
+    miaoqi_launcher_lib::run();
+}
