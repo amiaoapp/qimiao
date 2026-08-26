@@ -43,6 +43,7 @@ struct AppItem {
     installed_at: Option<u64>,
     launch_count: u32,
     favorite: bool,
+    manual: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +147,44 @@ fn is_app(path: &Path) -> bool {
         path.extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("desktop"))
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn looks_like_windows_non_app(path: &Path) -> bool {
+    let name = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .trim()
+        .to_lowercase();
+    let compact: String = name
+        .chars()
+        .filter(|character| !character.is_whitespace() && !"-_()[]".contains(*character))
+        .collect();
+    let obvious_action = [
+        "uninstall",
+        "unins",
+        "remove",
+        "repair",
+        "modify",
+        "setup",
+        "installer",
+        "updater",
+        "卸载",
+        "移除",
+        "删除",
+        "修复",
+        "安装",
+    ]
+    .iter()
+    .any(|prefix| compact.starts_with(prefix));
+    let uninstall_directory = path.ancestors().skip(1).any(|parent| {
+        parent
+            .file_name()
+            .map(|value| value.to_string_lossy().to_lowercase())
+            .is_some_and(|value| value == "uninstall" || value == "uninstaller" || value == "卸载")
+    });
+    obvious_action || uninstall_directory
 }
 
 fn color_for(name: &str) -> String {
@@ -384,7 +423,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-v2:{}:{}:{}",
+                "windows-icon-v3:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -402,28 +441,52 @@ fn app_icon(path: &Path, name: &str) -> String {
     }
     let _ = fs::create_dir_all(&cache);
     let script = r#"
-$p = $args[0]
-$out = $args[1]
+$p = $env:QIMAO_ICON_SOURCE
+$out = $env:QIMAO_ICON_OUTPUT
 try {
   Add-Type -AssemblyName System.Drawing
-  if ([IO.Path]::GetExtension($p) -ieq '.lnk') {
-    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($p)
-    $iconPath = ($shortcut.IconLocation -split ',')[0]
-    if ($iconPath -and (Test-Path -LiteralPath $iconPath)) { $p = $iconPath }
-    elseif ($shortcut.TargetPath -and (Test-Path -LiteralPath $shortcut.TargetPath)) { $p = $shortcut.TargetPath }
+  Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class QimiaoShellIcon {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct SHFILEINFO {
+    public IntPtr hIcon;
+    public int iIcon;
+    public uint dwAttributes;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
   }
-  $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($p)
-  if ($null -eq $icon) { exit 2 }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  public static extern IntPtr SHGetFileInfo(string path, uint attributes, ref SHFILEINFO info, uint size, uint flags);
+  [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
+}
+'@
+  $info = New-Object QimiaoShellIcon+SHFILEINFO
+  $flags = 0x00000100
+  [void][QimiaoShellIcon]::SHGetFileInfo($p, 0, [ref]$info, [Runtime.InteropServices.Marshal]::SizeOf($info), $flags)
+  if ($info.hIcon -eq [IntPtr]::Zero) { exit 2 }
+  $icon = [System.Drawing.Icon]::FromHandle($info.hIcon).Clone()
+  [void][QimiaoShellIcon]::DestroyIcon($info.hIcon)
   $bitmap = $icon.ToBitmap()
   $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
   $bitmap.Dispose()
   $icon.Dispose()
 } catch { exit 3 }
 "#;
+    let _ = fs::remove_file(&output_path);
     hidden_windows_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(path)
-        .arg(&output_path)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .env("QIMAO_ICON_SOURCE", path)
+        .env("QIMAO_ICON_OUTPUT", &output_path)
         .status()
         .ok()
         .filter(|status| status.success())
@@ -489,10 +552,11 @@ fn localized_app_name(_path: &Path, fallback: &str) -> String {
 
 fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
     let mut roots = default_dirs();
+    let _automatic_roots = roots.len();
     roots.extend(extra_dirs.into_iter().map(PathBuf::from));
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for root in roots {
+    for (_root_index, root) in roots.into_iter().enumerate() {
         if !root.exists() {
             continue;
         }
@@ -507,6 +571,20 @@ fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
             if !is_app(path) {
                 continue;
             }
+            #[cfg(target_os = "windows")]
+            {
+                let extension = path
+                    .extension()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                if (_root_index < _automatic_roots && extension != "lnk")
+                    || (_root_index >= _automatic_roots && extension == "exe" && entry.depth() > 2)
+                    || looks_like_windows_non_app(path)
+                {
+                    continue;
+                }
+            }
             let raw = path
                 .file_stem()
                 .unwrap_or_default()
@@ -515,7 +593,7 @@ fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
             if raw.is_empty() || raw.starts_with('.') || !seen.insert(raw.to_lowercase()) {
                 continue;
             }
-            if let Some(app) = app_item_from_path(path) {
+            if let Some(app) = app_item_from_path(path, false) {
                 result.push(app);
             }
         }
@@ -524,7 +602,7 @@ fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
     result
 }
 
-fn app_item_from_path(path: &Path) -> Option<AppItem> {
+fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
     if !is_app(path) {
         return None;
     }
@@ -549,6 +627,7 @@ fn app_item_from_path(path: &Path) -> Option<AppItem> {
         installed_at,
         launch_count: 0,
         favorite: false,
+        manual,
     })
 }
 
@@ -606,7 +685,7 @@ fn choose_app() -> Option<AppItem> {
     }
     dialog
         .pick_file()
-        .and_then(|path| app_item_from_path(&path))
+        .and_then(|path| app_item_from_path(&path, true))
 }
 
 #[tauri::command]
@@ -1248,12 +1327,19 @@ fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale
     // is the important part for transparent, borderless WebView2 windows; it
     // physically clips the compositor surface so no square pixels can leak.
     let preference: u32 = 2;
+    let color_none: u32 = 0xffff_fffe;
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
             33,
             (&preference as *const u32).cast(),
             std::mem::size_of_val(&preference) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            34,
+            (&color_none as *const u32).cast(),
+            std::mem::size_of_val(&color_none) as u32,
         );
         let region = CreateRoundRectRgn(
             0,
@@ -1273,7 +1359,7 @@ fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale
 fn apply_windows_rounded_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     set_windows_rounded_region(
         window.hwnd()?.0 as isize,
-        window.inner_size()?,
+        window.outer_size()?,
         window.scale_factor().unwrap_or(1.0),
     );
     Ok(())
@@ -1283,7 +1369,7 @@ fn apply_windows_rounded_region(window: &tauri::WebviewWindow) -> tauri::Result<
 fn refresh_windows_rounded_region(window: &tauri::Window) -> tauri::Result<()> {
     set_windows_rounded_region(
         window.hwnd()?.0 as isize,
-        window.inner_size()?,
+        window.outer_size()?,
         window.scale_factor().unwrap_or(1.0),
     );
     Ok(())
@@ -1465,6 +1551,8 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 #[cfg(target_os = "windows")]
                 {
+                    let _ = w.set_shadow(false);
+                    let _ = w.set_resizable(false);
                     let _ = w.set_min_size(Some(tauri::LogicalSize::new(770.0, 524.0)));
                     let _ = w.set_size(tauri::LogicalSize::new(957.0, 614.0));
                     let _ = apply_windows_rounded_region(&w);
@@ -1577,6 +1665,29 @@ mod extension_storage_tests {
         remove_extension_dir(&extension).unwrap();
         assert!(!extension.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_windows_uninstall_and_maintenance_entries() {
+        for path in [
+            "C:/Start Menu/Uninstall IDM.lnk",
+            "C:/Start Menu/卸载微信.lnk",
+            "C:/Program Files/App/unins000.exe",
+            "C:/Program Files/App/Updater.exe",
+        ] {
+            assert!(looks_like_windows_non_app(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn keeps_real_windows_app_entries() {
+        for path in [
+            "C:/Start Menu/Postman.lnk",
+            "C:/Start Menu/微信.lnk",
+            "C:/Program Files/App/Postman.exe",
+        ] {
+            assert!(!looks_like_windows_non_app(Path::new(path)), "{path}");
+        }
     }
 }
 

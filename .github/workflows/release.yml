@@ -68,14 +68,13 @@ jobs:
           releaseBody: |
             启喵 / Qimiao 跨平台安装包。
 
-            - Windows 原生裁剪圆角，彻底消除透明无边框窗口四角外扩
-            - Windows 图标提取改为隐藏进程并加入磁盘缓存，刷新和翻页不再弹出 CMD / PowerShell 窗口
-            - Windows 启动器窗口在 0.9.0 基础上放大 10%
-            - 扩展安装时校验真实预构建命令，自动忽略暂不支持的菜单栏命令
-            - 扩展支持可靠卸载、作用域名称与多层压缩包目录，修复 Raycast 运行时 Node os 兼容层
-            - 已使用 SuperCmd 商店真实 Emoji 扩展验证安装包结构、搜索、命令执行与卸载链路
+            - Windows 关闭原生阴影与缩放框架，使用外层窗口尺寸裁剪圆角并关闭 DWM 边框颜色
+            - Windows 扫描过滤卸载、安装、修复、更新入口，额外目录不再递归收录深层辅助程序
+            - Windows 图标直接通过 Shell API 提取快捷方式或 EXE 的真实图标
+            - 图标加载标记现在会持久保存，手动导入的应用重启后不再退回字母占位
+            - 刷新扫描会保留手动添加的应用，并自动清理旧缓存中的卸载入口
 
-            Windows now uses native rounded-window clipping, hidden icon-extraction processes, and a persistent icon cache. The built-in Raycast-format runtime has been validated with a real SuperCmd Store extension and now supports reliable removal.
+            Windows now removes the native shadow/resize frame, filters maintenance shortcuts, loads icons through the Windows Shell, and preserves manually added apps and their lazy icon markers across restarts.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

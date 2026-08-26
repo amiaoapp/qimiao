@@ -8,6 +8,7 @@ export type AppItem = {
   installedAt?: number;
   launchCount: number;
   favorite: boolean;
+  manual?: boolean;
   category?: string;
 };
 export type Theme = "system" | "light" | "dark";

@@ -94,17 +94,49 @@ const newerVersion = (latest: string, current: string) => {
   }
   return false;
 };
+const isWindows = navigator.userAgent.includes("Windows");
+const windowsMaintenanceEntry = (name: string) => {
+  const compact = name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[\s\-_()[\]]/g, "");
+  return [
+    "uninstall",
+    "unins",
+    "remove",
+    "repair",
+    "modify",
+    "setup",
+    "installer",
+    "updater",
+    "卸载",
+    "移除",
+    "删除",
+    "修复",
+    "安装",
+  ].some((prefix) => compact.startsWith(prefix));
+};
 const loadApps = (): AppItem[] =>
-  load<AppItem[]>("float-apps", []).map((app) => ({
-    ...app,
-    icon: app.icon?.startsWith("data:image/") ? undefined : app.icon,
-  }));
+  load<AppItem[]>("float-apps", [])
+    .filter((app) => !isWindows || !windowsMaintenanceEntry(app.name))
+    .map((app) => ({
+      ...app,
+      icon:
+        !app.icon || app.icon.startsWith("data:image/")
+          ? `app:${app.path}`
+          : app.icon,
+    }));
 const persistApps = (apps: AppItem[]) =>
   save(
     "float-apps",
-    apps.map(({ icon, ...metadata }) => metadata),
+    apps.map((app) => ({
+      ...app,
+      icon: app.icon?.startsWith("data:image/")
+        ? `app:${app.path}`
+        : app.icon || `app:${app.path}`,
+    })),
   );
-const APP_VERSION = "0.9.1";
+const APP_VERSION = "0.9.2";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 const pluginNames: Record<
@@ -177,20 +209,24 @@ export default function App() {
     setBusy(true);
     try {
       const found = await scanApps(settings.scanDirs);
-      setApps((old) =>
-        found.map((a) => {
+      setApps((old) => {
+        const scanned = found.map((a) => {
           const prev = old.find((x) => x.path === a.path);
           return prev
             ? {
                 ...a,
+                manual: prev.manual || a.manual,
                 favorite: prev.favorite,
                 category: prev.category,
                 launchCount: prev.launchCount,
                 lastUsed: prev.lastUsed,
               }
             : a;
-        }),
-      );
+        });
+        const paths = new Set(scanned.map((app) => app.path));
+        const manual = old.filter((app) => app.manual && !paths.has(app.path));
+        return [...scanned, ...manual];
+      });
       showToast(`已发现 ${found.length} 个应用`);
     } catch (e) {
       showToast(`扫描失败：${String(e)}`);
@@ -470,7 +506,10 @@ export default function App() {
     const selected = await chooseApp();
     if (!selected) return;
     setApps((current) => {
-      if (current.some((app) => app.path === selected.path)) return current;
+      if (current.some((app) => app.path === selected.path))
+        return current.map((app) =>
+          app.path === selected.path ? { ...app, manual: true } : app,
+        );
       return [...current, selected];
     });
     showToast(
