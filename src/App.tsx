@@ -96,9 +96,10 @@ const newerVersion = (latest: string, current: string) => {
   return false;
 };
 const isWindows = navigator.userAgent.includes("Windows");
+const isMacos = navigator.userAgent.includes("Mac");
 document.documentElement.dataset.platform = isWindows
   ? "windows"
-  : navigator.userAgent.includes("Mac")
+  : isMacos
     ? "macos"
     : "linux";
 const windowsMaintenanceEntry = (name: string) => {
@@ -162,7 +163,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.3";
+const APP_VERSION = "0.9.4";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 const pluginNames: Record<
@@ -179,7 +180,7 @@ const pluginNames: Record<
 export default function App() {
   const [settings, setSettings] = useState(() => {
     const stored = load("float-settings", defaultSettings);
-    return {
+    const merged = {
       ...defaultSettings,
       ...stored,
       pluginShortcuts: {
@@ -187,6 +188,9 @@ export default function App() {
         ...stored.pluginShortcuts,
       },
     };
+    return isWindows
+      ? { ...merged, autoScanApps: false, scanOnLaunch: false }
+      : merged;
   });
   const [apps, setApps] = useState<AppItem[]>(loadApps);
   const [query, setQuery] = useState("");
@@ -328,6 +332,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (
+      !isWindows &&
       settings.autoScanApps &&
       (!apps.length || settings.scanOnLaunch || apps.some((app) => !app.icon))
     )
@@ -1025,7 +1030,11 @@ export default function App() {
                         )}
                       </>
                     ) : (
-                      <Empty onRefresh={refresh} />
+                      <Empty
+                        onRefresh={
+                          isWindows ? () => void addManualApp() : refresh
+                        }
+                      />
                     )}
                   </section>
                 </>
@@ -1287,13 +1296,15 @@ function Header({
         >
           <Blocks />
         </button>
-        <button
-          className="icon-btn"
-          title={en ? "Refresh" : "刷新"}
-          onClick={onRefresh}
-        >
-          <RotateCw className={busy ? "spin" : ""} />
-        </button>
+        {!isWindows && (
+          <button
+            className="icon-btn"
+            title={en ? "Refresh" : "刷新"}
+            onClick={onRefresh}
+          >
+            <RotateCw className={busy ? "spin" : ""} />
+          </button>
+        )}
         <button
           className="icon-btn"
           title={en ? "Settings" : "设置"}
@@ -1448,8 +1459,8 @@ function Empty({ onRefresh }: { onRefresh: () => void }) {
       <h3>还没有发现应用</h3>
       <p>刷新系统应用，或在设置中添加扫描目录。</p>
       <button className="primary" onClick={onRefresh}>
-        <RefreshCw />
-        开始扫描
+        {isWindows ? <Plus /> : <RefreshCw />}
+        {isWindows ? "批量选择应用" : "开始扫描"}
       </button>
     </div>
   );
@@ -1739,9 +1750,13 @@ function SettingsPage({
           <div>
             <strong>{en ? "Window material" : "窗口材质"}</strong>
             <span>
-              {en
-                ? "Choose the background texture and transparency"
-                : "选择背景的质感和透明度"}
+              {settings.material === "liquid" && isMacos
+                ? en
+                  ? "Native liquid glass looks richer but uses more graphics memory"
+                  : "原生液态玻璃效果更丰富，也会占用更多图形内存"
+                : en
+                  ? "Choose the background texture and transparency"
+                  : "选择背景的质感和透明度"}
             </span>
           </div>
           <Segment
@@ -1767,28 +1782,40 @@ function SettingsPage({
       </SettingSection>
       <SettingSection
         icon={<ScanSearch />}
-        title={en ? "App scanning" : "应用扫描"}
+        title={
+          isWindows
+            ? en
+              ? "Application list"
+              : "应用列表"
+            : en
+              ? "App scanning"
+              : "应用扫描"
+        }
       >
-        <ToggleRow
-          title={en ? "Automatically scan system apps" : "自动扫描系统应用"}
-          desc={
-            en
-              ? "Turn this off to maintain a small launcher list manually"
-              : "关闭后可只维护自己手动添加的小型应用列表"
-          }
-          checked={settings.autoScanApps}
-          onChange={(enabled) => update({ autoScanApps: enabled })}
-        />
-        <ToggleRow
-          title={en ? "Scan at launch" : "启动时扫描"}
-          desc={
-            en
-              ? "Refresh the app list whenever Qimao opens"
-              : "每次打开启喵时更新应用列表"
-          }
-          checked={settings.scanOnLaunch}
-          onChange={(v) => update({ scanOnLaunch: v })}
-        />
+        {!isWindows && (
+          <>
+            <ToggleRow
+              title={en ? "Automatically scan system apps" : "自动扫描系统应用"}
+              desc={
+                en
+                  ? "Turn this off to maintain a small launcher list manually"
+                  : "关闭后可只维护自己手动添加的小型应用列表"
+              }
+              checked={settings.autoScanApps}
+              onChange={(enabled) => update({ autoScanApps: enabled })}
+            />
+            <ToggleRow
+              title={en ? "Scan at launch" : "启动时扫描"}
+              desc={
+                en
+                  ? "Refresh the app list whenever Qimao opens"
+                  : "每次打开启喵时更新应用列表"
+              }
+              checked={settings.scanOnLaunch}
+              onChange={(v) => update({ scanOnLaunch: v })}
+            />
+          </>
+        )}
         <div className="setting-row">
           <div>
             <strong>{en ? "Manual application list" : "手动管理应用"}</strong>
@@ -1818,41 +1845,43 @@ function SettingsPage({
             </button>
           </div>
         </div>
-        <div className="setting-row column">
-          <div>
-            <strong>{en ? "Additional folders" : "额外扫描目录"}</strong>
-            <span>
-              {en
-                ? "Included when you scan manually or enable automatic scanning"
-                : "手动刷新或开启自动扫描时，会一并扫描这些目录"}
-            </span>
+        {!isWindows && (
+          <div className="setting-row column">
+            <div>
+              <strong>{en ? "Additional folders" : "额外扫描目录"}</strong>
+              <span>
+                {en
+                  ? "Included when you scan manually or enable automatic scanning"
+                  : "手动刷新或开启自动扫描时，会一并扫描这些目录"}
+              </span>
+            </div>
+            <div className="dir-list">
+              {settings.scanDirs.map((d) => (
+                <div key={d}>
+                  <Folder />
+                  <span>{d}</span>
+                  <button
+                    onClick={() =>
+                      update({
+                        scanDirs: settings.scanDirs.filter((x) => x !== d),
+                      })
+                    }
+                  >
+                    <X />
+                  </button>
+                </div>
+              ))}
+              <button className="add-dir" onClick={addDir}>
+                <Plus />
+                {en ? "Add folder" : "添加目录"}
+              </button>
+              <button className="secondary" onClick={refresh}>
+                <RefreshCw />
+                {en ? "Scan and review" : "扫描并选择"}
+              </button>
+            </div>
           </div>
-          <div className="dir-list">
-            {settings.scanDirs.map((d) => (
-              <div key={d}>
-                <Folder />
-                <span>{d}</span>
-                <button
-                  onClick={() =>
-                    update({
-                      scanDirs: settings.scanDirs.filter((x) => x !== d),
-                    })
-                  }
-                >
-                  <X />
-                </button>
-              </div>
-            ))}
-            <button className="add-dir" onClick={addDir}>
-              <Plus />
-              {en ? "Add folder" : "添加目录"}
-            </button>
-            <button className="secondary" onClick={refresh}>
-              <RefreshCw />
-              {en ? "Scan and review" : "扫描并选择"}
-            </button>
-          </div>
-        </div>
+        )}
       </SettingSection>
       <SettingSection icon={<Keyboard />} title={en ? "Hotkey" : "快捷键"}>
         <div className="setting-row">

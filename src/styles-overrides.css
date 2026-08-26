@@ -11,6 +11,13 @@ html,body,#root{min-width:700px;min-height:476px;background:transparent!importan
 :root[data-theme=dark]{--panel:rgba(47,54,70,.88);--card:rgba(255,255,255,.105);--line:rgba(255,255,255,.14);--text:#f6f8fc;--muted:#b6c0d0;background:transparent!important}
 :root[data-theme=dark][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(55,64,84,.62),rgba(45,48,66,.55) 52%,rgba(61,48,75,.56))!important;backdrop-filter:blur(34px) saturate(150%) contrast(104%)!important;-webkit-backdrop-filter:blur(34px) saturate(150%) contrast(104%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}
 :root[data-theme=dark][data-material=glass] .launcher-shell:after{background:radial-gradient(ellipse at 8% -5%,rgba(142,190,255,.23),transparent 32%),radial-gradient(ellipse at 94% 0%,rgba(213,151,255,.2),transparent 34%),linear-gradient(112deg,rgba(255,255,255,.07),transparent 30% 68%,rgba(218,174,255,.07))}
+
+/* Keep liquid glass neutral and cheap to composite. Large colored radial
+   overlays amplified macOS' pointer-reactive native highlight and caused a
+   purple hotspot plus visible repaint streaks in the top-right corner. */
+:root[data-material=liquid] .launcher-shell:before{background:transparent!important}
+:root[data-material=liquid] .launcher-shell:after{background:linear-gradient(135deg,rgba(255,255,255,.24),transparent 36%),linear-gradient(315deg,rgba(126,210,255,.045),transparent 34%)!important;mix-blend-mode:normal!important}
+:root[data-theme=dark][data-material=liquid] .launcher-shell:after{background:linear-gradient(135deg,rgba(255,255,255,.105),transparent 38%),linear-gradient(315deg,rgba(126,210,255,.035),transparent 32%)!important}
 :root[data-theme=dark][data-material=solid] .launcher-shell{background:rgba(35,41,54,.985)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.13),0 27px 72px rgba(0,0,0,.32)!important}
 @media(prefers-color-scheme:dark){:root[data-theme=system]{--panel:rgba(47,54,70,.88);--card:rgba(255,255,255,.105);--line:rgba(255,255,255,.14);--text:#f6f8fc;--muted:#b6c0d0;background:transparent!important}:root[data-theme=system][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(55,64,84,.62),rgba(45,48,66,.55) 52%,rgba(61,48,75,.56))!important;backdrop-filter:blur(34px) saturate(150%)!important;-webkit-backdrop-filter:blur(34px) saturate(150%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}:root[data-theme=system][data-material=solid] .launcher-shell{background:rgba(35,41,54,.985)!important}}
 

@@ -1,6 +1,6 @@
 [package]
 name = "qimao-launcher"
-version = "0.9.3"
+version = "0.9.4"
 description = "APP喵旗下的智能跨平台启动器"
 authors = ["APP喵"]
 edition = "2021"
@@ -36,3 +36,4 @@ objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSS
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_UI_Shell"] }

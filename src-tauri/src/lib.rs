@@ -119,6 +119,7 @@ impl Default for ShortcutRuntime {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     #[cfg(target_os = "macos")]
@@ -130,18 +131,6 @@ fn default_dirs() -> Vec<PathBuf> {
         if let Some(home) = std::env::var_os("HOME") {
             dirs.push(PathBuf::from(home).join("Applications"));
         }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(path) = std::env::var_os("APPDATA") {
-            dirs.push(PathBuf::from(path).join("Microsoft/Windows/Start Menu/Programs"));
-        }
-        if let Some(path) = std::env::var_os("PROGRAMDATA") {
-            dirs.push(PathBuf::from(path).join("Microsoft/Windows/Start Menu/Programs"));
-        }
-        // Desktop folders commonly contain document shortcuts. Automatic
-        // discovery intentionally stays inside the application-only Start Menu;
-        // standalone executables can be added explicitly from Settings.
     }
     #[cfg(target_os = "linux")]
     {
@@ -179,6 +168,7 @@ fn is_app(path: &Path) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
+#[allow(dead_code)]
 fn looks_like_windows_non_app(path: &Path) -> bool {
     let name = path
         .file_stem()
@@ -483,7 +473,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-native-v1:{}:{}:{}",
+                "windows-icon-shell-factory-v2:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -509,6 +499,104 @@ fn app_icon(path: &Path, name: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn windows_shell_icon(path: &Path) -> Option<image::RgbaImage> {
+    windows_shell_thumbnail(path).or_else(|| windows_legacy_shell_icon(path))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::SIZE,
+            Graphics::Gdi::{
+                CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BI_RGB,
+                DIB_RGB_COLORS, HGDIOBJ,
+            },
+            System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+            UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY},
+        },
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let image = (|| {
+        let factory: IShellItemImageFactory =
+            unsafe { SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()? };
+        const SIDE: i32 = 160;
+        let bitmap = unsafe {
+            factory
+                .GetImage(SIZE { cx: SIDE, cy: SIDE }, SIIGBF_ICONONLY)
+                .ok()?
+        };
+        if bitmap.0.is_null() {
+            return None;
+        }
+        let mut bitmap_info = BITMAPINFO::default();
+        bitmap_info.bmiHeader.biSize = std::mem::size_of_val(&bitmap_info.bmiHeader) as u32;
+        bitmap_info.bmiHeader.biWidth = SIDE;
+        bitmap_info.bmiHeader.biHeight = -SIDE;
+        bitmap_info.bmiHeader.biPlanes = 1;
+        bitmap_info.bmiHeader.biBitCount = 32;
+        bitmap_info.bmiHeader.biCompression = BI_RGB.0;
+        let mut bgra = vec![0u8; (SIDE * SIDE * 4) as usize];
+        let dc = unsafe { CreateCompatibleDC(None) };
+        let copied = if dc.0.is_null() {
+            0
+        } else {
+            unsafe {
+                GetDIBits(
+                    dc,
+                    bitmap,
+                    0,
+                    SIDE as u32,
+                    Some(bgra.as_mut_ptr().cast()),
+                    &mut bitmap_info,
+                    DIB_RGB_COLORS,
+                )
+            }
+        };
+        if !dc.0.is_null() {
+            let _ = unsafe { DeleteDC(dc) };
+        }
+        let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+        if copied == 0 {
+            return None;
+        }
+        let has_alpha = bgra.chunks_exact(4).any(|pixel| pixel[3] != 0);
+        let mut rgba = Vec::with_capacity(bgra.len());
+        for pixel in bgra.chunks_exact(4) {
+            let alpha = if has_alpha {
+                pixel[3]
+            } else if pixel[0] | pixel[1] | pixel[2] != 0 {
+                255
+            } else {
+                0
+            };
+            let unpremultiply = |channel: u8| -> u8 {
+                if alpha > 0 && alpha < 255 {
+                    ((u16::from(channel) * 255 / u16::from(alpha)).min(255)) as u8
+                } else {
+                    channel
+                }
+            };
+            rgba.extend_from_slice(&[
+                unpremultiply(pixel[2]),
+                unpremultiply(pixel[1]),
+                unpremultiply(pixel[0]),
+                alpha,
+            ]);
+        }
+        image::RgbaImage::from_raw(SIDE as u32, SIDE as u32, rgba)
+    })();
+    if initialized {
+        unsafe { CoUninitialize() };
+    }
+    image
+}
+
+#[cfg(target_os = "windows")]
+fn windows_legacy_shell_icon(path: &Path) -> Option<image::RgbaImage> {
     use std::{ffi::c_void, os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::HANDLE,
@@ -667,55 +755,48 @@ fn localized_app_name(_path: &Path, fallback: &str) -> String {
 }
 
 fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
-    let mut roots = default_dirs();
-    let _automatic_roots = roots.len();
-    roots.extend(extra_dirs.into_iter().map(PathBuf::from));
-    let mut seen = HashSet::new();
-    let mut result = Vec::new();
-    for (_root_index, root) in roots.into_iter().enumerate() {
-        if !root.exists() {
-            continue;
-        }
-        let max_depth = if cfg!(target_os = "macos") { 3 } else { 5 };
-        for entry in WalkDir::new(root)
-            .max_depth(max_depth)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if !is_app(path) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = extra_dirs;
+        return Vec::new();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut roots = default_dirs();
+        roots.extend(extra_dirs.into_iter().map(PathBuf::from));
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for root in roots {
+            if !root.exists() {
                 continue;
             }
-            #[cfg(target_os = "windows")]
+            let max_depth = if cfg!(target_os = "macos") { 3 } else { 5 };
+            for entry in WalkDir::new(root)
+                .max_depth(max_depth)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
             {
-                let extension = path
-                    .extension()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_ascii_lowercase();
-                if (_root_index < _automatic_roots && extension != "lnk")
-                    || (_root_index >= _automatic_roots && extension == "exe" && entry.depth() > 2)
-                    || looks_like_windows_non_app(path)
-                {
+                let path = entry.path();
+                if !is_app(path) {
                     continue;
                 }
-            }
-            let raw = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            if raw.is_empty() || raw.starts_with('.') || !seen.insert(raw.to_lowercase()) {
-                continue;
-            }
-            if let Some(app) = app_item_from_path(path, false) {
-                result.push(app);
+                let raw = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if raw.is_empty() || raw.starts_with('.') || !seen.insert(raw.to_lowercase()) {
+                    continue;
+                }
+                if let Some(app) = app_item_from_path(path, false) {
+                    result.push(app);
+                }
             }
         }
+        result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        result
     }
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    result
 }
 
 fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
