@@ -25,12 +25,19 @@ export async function chooseFolder(): Promise<string | null> {
   }
   return null;
 }
-export async function chooseApp(): Promise<AppItem | null> {
+export async function chooseApps(): Promise<AppItem[]> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("choose_app");
+    return invoke("choose_apps");
   }
-  return null;
+  return [];
+}
+export async function desktopApps(): Promise<AppItem[]> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("desktop_apps");
+  }
+  return [];
 }
 export async function hideLauncher() {
   if (isTauri()) {

@@ -40,8 +40,9 @@ import {
   type ExtensionCatalogEntry,
 } from "./types";
 import {
-  chooseApp,
+  chooseApps,
   chooseFolder,
+  desktopApps,
   fetchExtensionCatalog,
   getAutoStart,
   hideLauncher,
@@ -95,6 +96,11 @@ const newerVersion = (latest: string, current: string) => {
   return false;
 };
 const isWindows = navigator.userAgent.includes("Windows");
+document.documentElement.dataset.platform = isWindows
+  ? "windows"
+  : navigator.userAgent.includes("Mac")
+    ? "macos"
+    : "linux";
 const windowsMaintenanceEntry = (name: string) => {
   const compact = name
     .trim()
@@ -114,7 +120,27 @@ const windowsMaintenanceEntry = (name: string) => {
     "删除",
     "修复",
     "安装",
-  ].some((prefix) => compact.startsWith(prefix));
+  ].some((word) => compact.includes(word)) ||
+    [
+      "administrativetools",
+      "charactermap",
+      "commandprompt",
+      "componentservices",
+      "computermanagement",
+      "onscreenkeyboard",
+      "performancemonitor",
+      "recoverydrive",
+      "registryeditor",
+      "resourcemonitor",
+      "run",
+      "services",
+      "stepsrecorder",
+      "systemconfiguration",
+      "systeminformation",
+      "taskscheduler",
+      "taskmanager",
+      "windowspowershell",
+    ].includes(compact);
 };
 const loadApps = (): AppItem[] =>
   load<AppItem[]>("float-apps", [])
@@ -136,7 +162,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.2";
+const APP_VERSION = "0.9.3";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 const pluginNames: Record<
@@ -178,6 +204,12 @@ export default function App() {
     version: string;
     url: string;
   } | null>(null);
+  const [importReview, setImportReview] = useState<{
+    title: string;
+    apps: AppItem[];
+    selected: string[];
+  } | null>(null);
+  const [clearConfirm, setClearConfirm] = useState(false);
   const [extensionCommands, setExtensionCommands] = useState<
     ExtensionCommand[]
   >([]);
@@ -209,30 +241,50 @@ export default function App() {
     setBusy(true);
     try {
       const found = await scanApps(settings.scanDirs);
-      setApps((old) => {
-        const scanned = found.map((a) => {
-          const prev = old.find((x) => x.path === a.path);
-          return prev
-            ? {
-                ...a,
-                manual: prev.manual || a.manual,
-                favorite: prev.favorite,
-                category: prev.category,
-                launchCount: prev.launchCount,
-                lastUsed: prev.lastUsed,
-              }
-            : a;
-        });
-        const paths = new Set(scanned.map((app) => app.path));
-        const manual = old.filter((app) => app.manual && !paths.has(app.path));
-        return [...scanned, ...manual];
+      setImportReview({
+        title:
+          settings.language === "en"
+            ? "Review scanned applications"
+            : "确认要添加的扫描结果",
+        apps: found,
+        selected: found.map((app) => app.id),
       });
-      showToast(`已发现 ${found.length} 个应用`);
+      showToast(
+        settings.language === "en"
+          ? `${found.length} candidates found`
+          : `发现 ${found.length} 个候选应用，请确认`,
+      );
     } catch (e) {
       showToast(`扫描失败：${String(e)}`);
     } finally {
       setBusy(false);
     }
+  }
+  function acceptImportReview() {
+    if (!importReview) return;
+    const selected = new Set(importReview.selected);
+    const chosen = importReview.apps.filter((app) => selected.has(app.id));
+    setApps((current) => {
+      const merged = new Map(current.map((app) => [app.path.toLowerCase(), app]));
+      for (const app of chosen) {
+        const previous = merged.get(app.path.toLowerCase());
+        merged.set(app.path.toLowerCase(), {
+          ...app,
+          manual: app.manual || previous?.manual || false,
+          favorite: previous?.favorite ?? app.favorite,
+          category: previous?.category,
+          launchCount: previous?.launchCount ?? app.launchCount,
+          lastUsed: previous?.lastUsed,
+        });
+      }
+      return [...merged.values()];
+    });
+    setImportReview(null);
+    showToast(
+      settings.language === "en"
+        ? `Added ${chosen.length} applications`
+        : `已添加 ${chosen.length} 个应用`,
+    );
   }
   function showToast(t: string) {
     setToast(t);
@@ -301,6 +353,14 @@ export default function App() {
           setAvailableUpdate(null);
           return;
         }
+        if (importReview) {
+          setImportReview(null);
+          return;
+        }
+        if (clearConfirm) {
+          setClearConfirm(false);
+          return;
+        }
         if (page !== "home") {
           setPage("home");
           return;
@@ -318,7 +378,7 @@ export default function App() {
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [activeExtension, categoryManager, aboutOpen, availableUpdate, page, menu, query, pluginMode]);
+  }, [activeExtension, categoryManager, aboutOpen, availableUpdate, importReview, clearConfirm, page, menu, query, pluginMode]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -503,20 +563,35 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addManualApp() {
-    const selected = await chooseApp();
-    if (!selected) return;
-    setApps((current) => {
-      if (current.some((app) => app.path === selected.path))
-        return current.map((app) =>
-          app.path === selected.path ? { ...app, manual: true } : app,
-        );
-      return [...current, selected];
+    const selected = await chooseApps();
+    if (!selected.length) return;
+    setImportReview({
+      title:
+        settings.language === "en"
+          ? "Review selected applications"
+          : "确认手动添加的应用",
+      apps: selected,
+      selected: selected.map((app) => app.id),
     });
-    showToast(
-      settings.language === "en"
-        ? `Added ${selected.name}`
-        : `已添加 ${selected.name}`,
-    );
+  }
+  async function importDesktop() {
+    const selected = await desktopApps();
+    if (!selected.length) {
+      showToast(
+        settings.language === "en"
+          ? "No application shortcuts found on either desktop"
+          : "用户桌面和公共桌面中没有找到应用快捷方式",
+      );
+      return;
+    }
+    setImportReview({
+      title:
+        settings.language === "en"
+          ? "Import desktop shortcuts"
+          : "导入桌面快捷方式",
+      apps: selected,
+      selected: selected.map((app) => app.id),
+    });
   }
   async function runPlugin() {
     if (!pluginMode) return;
@@ -733,6 +808,14 @@ export default function App() {
       <div className="ambient a2" />
       <section className="launcher-shell">
         <div className="content">
+          {availableUpdate && (
+            <UpdateBanner
+              language={settings.language}
+              version={availableUpdate.version}
+              onClose={() => setAvailableUpdate(null)}
+              onDownload={() => void openExternalUrl(availableUpdate.url)}
+            />
+          )}
           {page === "home" ? (
             <>
               <Header
@@ -959,15 +1042,8 @@ export default function App() {
                 update={updateSettings}
                 refresh={refresh}
                 onAddApp={() => void addManualApp()}
-                onClearApps={() => {
-                  setApps([]);
-                  setAppPage(0);
-                  showToast(
-                    settings.language === "en"
-                      ? "Application list cleared"
-                      : "已清空应用列表",
-                  );
-                }}
+                onImportDesktop={() => void importDesktop()}
+                onClearApps={() => setClearConfirm(true)}
                 onCheckUpdate={() => void checkForUpdates()}
                 onAbout={() => setAboutOpen(true)}
               />
@@ -1060,12 +1136,35 @@ export default function App() {
           onClose={() => setAboutOpen(false)}
         />
       )}
-      {availableUpdate && (
-        <UpdateDialog
+      {importReview && (
+        <ImportReviewDialog
           language={settings.language}
-          version={availableUpdate.version}
-          onClose={() => setAvailableUpdate(null)}
-          onDownload={() => void openExternalUrl(availableUpdate.url)}
+          title={importReview.title}
+          apps={importReview.apps}
+          selected={importReview.selected}
+          onSelected={(selected) =>
+            setImportReview((current) =>
+              current ? { ...current, selected } : null,
+            )
+          }
+          onClose={() => setImportReview(null)}
+          onConfirm={acceptImportReview}
+        />
+      )}
+      {clearConfirm && (
+        <ConfirmDialog
+          language={settings.language}
+          onClose={() => setClearConfirm(false)}
+          onConfirm={() => {
+            setApps([]);
+            setAppPage(0);
+            setClearConfirm(false);
+            showToast(
+              settings.language === "en"
+                ? "Application list cleared"
+                : "已清空应用列表",
+            );
+          }}
         />
       )}
       {toast && (
@@ -1567,6 +1666,7 @@ function SettingsPage({
   update,
   refresh,
   onAddApp,
+  onImportDesktop,
   onClearApps,
   onCheckUpdate,
   onAbout,
@@ -1575,6 +1675,7 @@ function SettingsPage({
   update: (p: Partial<Settings>) => void;
   refresh: () => void;
   onAddApp: () => void;
+  onImportDesktop: () => void;
   onClearApps: () => void;
   onCheckUpdate: () => void;
   onAbout: () => void;
@@ -1693,27 +1794,24 @@ function SettingsPage({
             <strong>{en ? "Manual application list" : "手动管理应用"}</strong>
             <span>
               {en
-                ? "Add one executable or shortcut at a time, or clear the current list"
-                : "逐个添加应用、可执行文件或快捷方式，也可一次清空当前列表"}
+                ? "Select multiple executables or shortcuts, or import both Windows desktop folders"
+                : "可一次多选应用或快捷方式，也可导入用户桌面与公共桌面"}
             </span>
           </div>
           <div className="setting-actions">
             <button className="secondary" onClick={onAddApp}>
               <Plus />
-              {en ? "Add app" : "添加应用"}
+              {en ? "Select apps" : "批量选择"}
             </button>
+            {isWindows && (
+              <button className="secondary" onClick={onImportDesktop}>
+                <AppWindow />
+                {en ? "Import desktop" : "导入桌面"}
+              </button>
+            )}
             <button
               className="secondary danger-text"
-              onClick={() => {
-                if (
-                  confirm(
-                    en
-                      ? "Clear the entire application list?"
-                      : "确定清空整个应用列表吗？",
-                  )
-                )
-                  onClearApps();
-              }}
+              onClick={onClearApps}
             >
               <Trash2 />
               {en ? "Clear list" : "清空列表"}
@@ -1751,7 +1849,7 @@ function SettingsPage({
             </button>
             <button className="secondary" onClick={refresh}>
               <RefreshCw />
-              {en ? "Refresh now" : "立即刷新"}
+              {en ? "Scan and review" : "扫描并选择"}
             </button>
           </div>
         </div>
@@ -2654,7 +2752,7 @@ function AboutDialog({
     </>
   );
 }
-function UpdateDialog({
+function UpdateBanner({
   language,
   version,
   onClose,
@@ -2667,29 +2765,115 @@ function UpdateDialog({
 }) {
   const en = language === "en";
   return (
-    <>
-      <div className="scrim category-scrim" onClick={onClose} />
-      <section className="about-dialog update-dialog">
-        <button className="about-close" onClick={onClose}>
-          <X />
-        </button>
-        <img src={appIconUrl} alt="启喵" />
-        <h2>{en ? "A new version is available" : "发现启喵新版本"}</h2>
-        <strong>v{version}</strong>
-        <p>
+    <section className="update-banner" role="status">
+      <span className="update-arrow">↑</span>
+      <div>
+        <strong>{en ? `Qimiao ${version} is available` : `启喵 ${version} 已发布`}</strong>
+        <small>
           {en
-            ? `You are using v${APP_VERSION}. Open GitHub Releases to download the installer for this system.`
-            : `当前版本为 v${APP_VERSION}。前往 GitHub Releases 下载适合当前系统的安装包。`}
-        </p>
-        <div className="update-actions">
-          <button className="secondary" onClick={onClose}>
-            {en ? "Later" : "稍后"}
-          </button>
-          <button className="primary" onClick={onDownload}>
-            <ChevronRight />
-            {en ? "Download update" : "前往下载"}
-          </button>
+            ? `Current version ${APP_VERSION}. Updating is recommended.`
+            : `当前版本 ${APP_VERSION}，建议更新后继续使用。`}
+        </small>
+      </div>
+      <button className="primary" onClick={onDownload}>
+        {en ? "View update" : "查看更新"}
+      </button>
+      <button className="update-close" onClick={onClose} aria-label="关闭">
+        <X />
+      </button>
+    </section>
+  );
+}
+
+function ImportReviewDialog({
+  language,
+  title,
+  apps,
+  selected,
+  onSelected,
+  onClose,
+  onConfirm,
+}: {
+  language: Settings["language"];
+  title: string;
+  apps: AppItem[];
+  selected: string[];
+  onSelected: (ids: string[]) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const en = language === "en";
+  const picked = new Set(selected);
+  return (
+    <>
+      <div className="scrim category-scrim" />
+      <section className="import-review" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <h2>{title}</h2>
+            <p>
+              {en
+                ? "Only checked items will be added. Nothing is added until you confirm."
+                : "只有勾选项会加入启动器，确认前不会修改当前列表。"}
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="关闭"><X /></button>
+        </header>
+        <div className="review-toolbar">
+          <strong>{en ? `${selected.length} of ${apps.length} selected` : `已选 ${selected.length} / ${apps.length}`}</strong>
+          <button onClick={() => onSelected(apps.map((app) => app.id))}>{en ? "Select all" : "全选"}</button>
+          <button onClick={() => onSelected([])}>{en ? "Select none" : "全不选"}</button>
         </div>
+        <div className="review-list">
+          {apps.map((app) => (
+            <label key={app.id}>
+              <input
+                type="checkbox"
+                checked={picked.has(app.id)}
+                onChange={() =>
+                  onSelected(
+                    picked.has(app.id)
+                      ? selected.filter((id) => id !== app.id)
+                      : [...selected, app.id],
+                  )
+                }
+              />
+              <span>{app.name.slice(0, 1).toUpperCase()}</span>
+              <div><strong>{app.name}</strong><small>{app.path}</small></div>
+            </label>
+          ))}
+        </div>
+        <footer>
+          <button className="secondary" onClick={onClose}>{en ? "Cancel" : "取消"}</button>
+          <button className="primary" disabled={!selected.length} onClick={onConfirm}>
+            <Check />{en ? `Add ${selected.length}` : `添加 ${selected.length} 个`}
+          </button>
+        </footer>
+      </section>
+    </>
+  );
+}
+
+function ConfirmDialog({
+  language,
+  onClose,
+  onConfirm,
+}: {
+  language: Settings["language"];
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const en = language === "en";
+  return (
+    <>
+      <div className="scrim category-scrim" />
+      <section className="confirm-dialog" role="dialog" aria-modal="true">
+        <h2>{en ? "Clear application list?" : "清空应用列表？"}</h2>
+        <p>{en ? "Categories and application usage data in the list will also be removed." : "列表中的分类关系和应用使用记录也会一并移除。"}</p>
+        <footer>
+          <button className="secondary" onClick={onClose}>{en ? "Cancel" : "取消"}</button>
+          <button className="primary danger-button" onClick={onConfirm}>{en ? "Clear list" : "确认清空"}</button>
+        </footer>
       </section>
     </>
   );

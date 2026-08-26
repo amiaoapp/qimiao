@@ -81,6 +81,35 @@ struct ShortcutRuntime {
     double_control: AtomicBool,
     last_control: Mutex<Option<Instant>>,
 }
+
+struct WindowRuntime {
+    native_dialog_open: AtomicBool,
+    ignore_blur_until: Mutex<Option<Instant>>,
+}
+impl Default for WindowRuntime {
+    fn default() -> Self {
+        Self {
+            native_dialog_open: AtomicBool::new(false),
+            ignore_blur_until: Mutex::new(None),
+        }
+    }
+}
+impl WindowRuntime {
+    fn protect_focus(&self, duration: Duration) {
+        if let Ok(mut until) = self.ignore_blur_until.lock() {
+            *until = Some(Instant::now() + duration);
+        }
+    }
+    fn should_hide(&self) -> bool {
+        if self.native_dialog_open.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.ignore_blur_until
+            .lock()
+            .map(|until| !until.is_some_and(|deadline| Instant::now() < deadline))
+            .unwrap_or(true)
+    }
+}
 impl Default for ShortcutRuntime {
     fn default() -> Self {
         Self {
@@ -177,14 +206,45 @@ fn looks_like_windows_non_app(path: &Path) -> bool {
         "安装",
     ]
     .iter()
-    .any(|prefix| compact.starts_with(prefix));
+    .any(|word| compact.contains(word));
+    let system_tool = [
+        "administrativetools",
+        "charactermap",
+        "commandprompt",
+        "componentservices",
+        "computermanagement",
+        "onscreenkeyboard",
+        "performancemonitor",
+        "recoverydrive",
+        "registryeditor",
+        "resourcemonitor",
+        "run",
+        "services",
+        "stepsrecorder",
+        "systemconfiguration",
+        "systeminformation",
+        "taskscheduler",
+        "taskmanager",
+        "windowspowershell",
+        "windowsdefender",
+        "windowsmediaplayer",
+    ]
+    .contains(&compact.as_str());
+    let system_tool_directory = path.ancestors().skip(1).any(|parent| {
+        parent.file_name().is_some_and(|value| {
+            matches!(
+                value.to_string_lossy().to_lowercase().as_str(),
+                "administrative tools" | "windows tools" | "system tools"
+            )
+        })
+    });
     let uninstall_directory = path.ancestors().skip(1).any(|parent| {
         parent
             .file_name()
             .map(|value| value.to_string_lossy().to_lowercase())
             .is_some_and(|value| value == "uninstall" || value == "uninstaller" || value == "卸载")
     });
-    obvious_action || uninstall_directory
+    obvious_action || uninstall_directory || system_tool || system_tool_directory
 }
 
 fn color_for(name: &str) -> String {
@@ -423,7 +483,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-v3:{}:{}:{}",
+                "windows-icon-native-v1:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -440,60 +500,116 @@ fn app_icon(path: &Path, name: &str) -> String {
         return format!("data:image/png;base64,{}", STANDARD.encode(bytes));
     }
     let _ = fs::create_dir_all(&cache);
-    let script = r#"
-$p = $env:QIMAO_ICON_SOURCE
-$out = $env:QIMAO_ICON_OUTPUT
-try {
-  Add-Type -AssemblyName System.Drawing
-  Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class QimiaoShellIcon {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  public struct SHFILEINFO {
-    public IntPtr hIcon;
-    public int iIcon;
-    public uint dwAttributes;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
-  }
-  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-  public static extern IntPtr SHGetFileInfo(string path, uint attributes, ref SHFILEINFO info, uint size, uint flags);
-  [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
-}
-'@
-  $info = New-Object QimiaoShellIcon+SHFILEINFO
-  $flags = 0x00000100
-  [void][QimiaoShellIcon]::SHGetFileInfo($p, 0, [ref]$info, [Runtime.InteropServices.Marshal]::SizeOf($info), $flags)
-  if ($info.hIcon -eq [IntPtr]::Zero) { exit 2 }
-  $icon = [System.Drawing.Icon]::FromHandle($info.hIcon).Clone()
-  [void][QimiaoShellIcon]::DestroyIcon($info.hIcon)
-  $bitmap = $icon.ToBitmap()
-  $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
-  $bitmap.Dispose()
-  $icon.Dispose()
-} catch { exit 3 }
-"#;
-    let _ = fs::remove_file(&output_path);
-    hidden_windows_command("powershell")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .env("QIMAO_ICON_SOURCE", path)
-        .env("QIMAO_ICON_OUTPUT", &output_path)
-        .status()
-        .ok()
-        .filter(|status| status.success())
+    windows_shell_icon(path)
+        .and_then(|image| image.save(&output_path).ok().map(|_| image))
         .and_then(|_| fs::read(&output_path).ok())
-        .filter(|bytes| !bytes.is_empty())
         .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
         .unwrap_or_else(|| color_for(name))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shell_icon(path: &Path) -> Option<image::RgbaImage> {
+    use std::{ffi::c_void, os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Graphics::Gdi::{
+            CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
+            BI_RGB, DIB_RGB_COLORS,
+        },
+        UI::{
+            Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON},
+            WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL},
+        },
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut info = SHFILEINFOW::default();
+    let found = unsafe {
+        SHGetFileInfoW(
+            wide.as_ptr(),
+            0,
+            &mut info,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        )
+    };
+    if found == 0 || info.hIcon.is_null() {
+        return None;
+    }
+
+    const SIDE: i32 = 128;
+    let mut bitmap_info = BITMAPINFO::default();
+    bitmap_info.bmiHeader.biSize = std::mem::size_of_val(&bitmap_info.bmiHeader) as u32;
+    bitmap_info.bmiHeader.biWidth = SIDE;
+    bitmap_info.bmiHeader.biHeight = -SIDE;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+    let mut pixels: *mut c_void = ptr::null_mut();
+    let dc = unsafe { CreateCompatibleDC(ptr::null_mut()) };
+    if dc.is_null() {
+        unsafe { DestroyIcon(info.hIcon) };
+        return None;
+    }
+    let bitmap = unsafe {
+        CreateDIBSection(
+            dc,
+            &bitmap_info,
+            DIB_RGB_COLORS,
+            &mut pixels,
+            ptr::null_mut::<c_void>() as HANDLE,
+            0,
+        )
+    };
+    if bitmap.is_null() || pixels.is_null() {
+        unsafe {
+            DeleteDC(dc);
+            DestroyIcon(info.hIcon);
+        }
+        return None;
+    }
+    let old = unsafe { SelectObject(dc, bitmap) };
+    let drawn = unsafe {
+        DrawIconEx(
+            dc,
+            0,
+            0,
+            info.hIcon,
+            SIDE,
+            SIDE,
+            0,
+            ptr::null_mut(),
+            DI_NORMAL,
+        )
+    };
+    let byte_count = (SIDE * SIDE * 4) as usize;
+    let bgra = unsafe { std::slice::from_raw_parts(pixels.cast::<u8>(), byte_count) };
+    let has_alpha = bgra.chunks_exact(4).any(|pixel| pixel[3] != 0);
+    let mut rgba = Vec::with_capacity(byte_count);
+    for pixel in bgra.chunks_exact(4) {
+        rgba.extend_from_slice(&[
+            pixel[2],
+            pixel[1],
+            pixel[0],
+            if has_alpha {
+                pixel[3]
+            } else if pixel[0] | pixel[1] | pixel[2] != 0 {
+                255
+            } else {
+                0
+            },
+        ]);
+    }
+    unsafe {
+        SelectObject(dc, old);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        DestroyIcon(info.hIcon);
+    }
+    if drawn == 0 {
+        return None;
+    }
+    image::RgbaImage::from_raw(SIDE as u32, SIDE as u32, rgba)
 }
 
 #[cfg(target_os = "linux")]
@@ -647,29 +763,54 @@ fn launch_app(path: String) -> Result<(), String> {
         c
     };
     #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = hidden_windows_command("cmd");
-        c.args(["/C", "start", "", &path]);
-        c
-    };
+    {
+        use std::{os::windows::ffi::OsStrExt, ptr};
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        let wide: Vec<u16> = std::ffi::OsStr::new(&path)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                ptr::null_mut(),
+                ptr::null(),
+                wide.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        return if result > 32 {
+            Ok(())
+        } else {
+            Err(format!("Windows 无法启动此应用（错误 {result}）"))
+        };
+    }
     #[cfg(target_os = "linux")]
     let mut cmd = {
         let mut c = Command::new("gtk-launch");
         c.arg(Path::new(&path).file_stem().unwrap_or_default());
         c
     };
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
-fn choose_folder() -> Option<String> {
-    rfd::FileDialog::new()
+fn choose_folder(state: tauri::State<WindowRuntime>) -> Option<String> {
+    state.native_dialog_open.store(true, Ordering::SeqCst);
+    let selected = rfd::FileDialog::new()
         .pick_folder()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string_lossy().to_string());
+    state.native_dialog_open.store(false, Ordering::SeqCst);
+    state.protect_focus(Duration::from_millis(800));
+    selected
 }
 
 #[tauri::command]
-fn choose_app() -> Option<AppItem> {
+fn choose_apps(state: tauri::State<WindowRuntime>) -> Vec<AppItem> {
     let mut dialog = rfd::FileDialog::new();
     #[cfg(target_os = "macos")]
     {
@@ -683,9 +824,49 @@ fn choose_app() -> Option<AppItem> {
     {
         dialog = dialog.add_filter("Linux 应用", &["desktop"]);
     }
-    dialog
-        .pick_file()
-        .and_then(|path| app_item_from_path(&path, true))
+    state.native_dialog_open.store(true, Ordering::SeqCst);
+    let apps = dialog
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|path| app_item_from_path(&path, true))
+        .collect();
+    state.native_dialog_open.store(false, Ordering::SeqCst);
+    state.protect_focus(Duration::from_millis(800));
+    apps
+}
+
+#[tauri::command]
+fn desktop_apps() -> Vec<AppItem> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut roots = Vec::new();
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let profile = PathBuf::from(profile);
+            roots.push(profile.join("Desktop"));
+            roots.push(profile.join("OneDrive/Desktop"));
+        }
+        if let Some(public) = std::env::var_os("PUBLIC") {
+            roots.push(PathBuf::from(public).join("Desktop"));
+        }
+        let mut seen = HashSet::new();
+        let mut apps: Vec<AppItem> = roots
+            .into_iter()
+            .flat_map(|root| {
+                WalkDir::new(root)
+                    .max_depth(1)
+                    .into_iter()
+                    .filter_map(Result::ok)
+            })
+            .filter(|entry| entry.file_type().is_file() && is_app(entry.path()))
+            .filter_map(|entry| app_item_from_path(entry.path(), true))
+            .filter(|app| seen.insert(app.path.to_lowercase()))
+            .collect();
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        return apps;
+    }
+    #[cfg(not(target_os = "windows"))]
+    Vec::new()
 }
 
 #[tauri::command]
@@ -1177,24 +1358,11 @@ fn set_window_material(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use tauri::window::{Color, Effect, EffectsBuilder};
-        if material == "solid" {
-            window.set_effects(None).map_err(|e| e.to_string())?;
-        } else {
-            let color = if dark {
-                Color(50, 59, 78, if material == "glass" { 120 } else { 88 })
-            } else {
-                Color(238, 244, 252, if material == "glass" { 112 } else { 76 })
-            };
-            window
-                .set_effects(
-                    EffectsBuilder::new()
-                        .effect(Effect::Acrylic)
-                        .color(color)
-                        .build(),
-                )
-                .map_err(|e| e.to_string())?;
-        }
+        // Native Acrylic leaks beyond transparent rounded windows on Windows
+        // 10 and may paint a second non-client strip in WebView2. The clipped
+        // web surface renders the chosen material consistently instead.
+        window.set_effects(None).map_err(|e| e.to_string())?;
+        let _ = (material, dark);
     }
     #[cfg(target_os = "macos")]
     {
@@ -1357,12 +1525,38 @@ fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale
 
 #[cfg(target_os = "windows")]
 fn apply_windows_rounded_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    enforce_windows_frameless(window.hwnd()?.0 as isize);
     set_windows_rounded_region(
         window.hwnd()?.0 as isize,
         window.outer_size()?,
         window.scale_factor().unwrap_or(1.0),
     );
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn enforce_windows_frameless(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_MAXIMIZEBOX,
+        WS_MINIMIZEBOX, WS_SYSMENU,
+    };
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+        let clean = style & !(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        if clean != style {
+            SetWindowLongPtrW(hwnd as _, GWL_STYLE, clean as isize);
+        }
+        SetWindowPos(
+            hwnd as _,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1424,6 +1618,10 @@ fn position_launcher(window: &tauri::WebviewWindow) {
 
 fn show_launcher(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        app.state::<WindowRuntime>()
+            .protect_focus(Duration::from_millis(1200));
+        #[cfg(target_os = "windows")]
+        let _ = apply_windows_rounded_region(&w);
         position_launcher(&w);
         let _ = w.show();
         let _ = w.set_focus();
@@ -1488,6 +1686,7 @@ pub fn run() {
     let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
     tauri::Builder::default()
         .manage(ShortcutRuntime::default())
+        .manage(WindowRuntime::default())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("启喵")
@@ -1552,7 +1751,9 @@ pub fn run() {
                 #[cfg(target_os = "windows")]
                 {
                     let _ = w.set_shadow(false);
-                    let _ = w.set_resizable(false);
+                    let _ = w.set_decorations(false);
+                    let _ = w.set_resizable(true);
+                    let _ = w.set_skip_taskbar(true);
                     let _ = w.set_min_size(Some(tauri::LogicalSize::new(770.0, 524.0)));
                     let _ = w.set_size(tauri::LogicalSize::new(957.0, 614.0));
                     let _ = apply_windows_rounded_region(&w);
@@ -1563,6 +1764,8 @@ pub fn run() {
                 if std::env::args().any(|arg| arg == "--autostart") {
                     let _ = w.hide();
                 } else {
+                    app.state::<WindowRuntime>()
+                        .protect_focus(Duration::from_millis(1500));
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
@@ -1585,17 +1788,24 @@ pub fn run() {
         .on_window_event(|window, event| {
             #[cfg(target_os = "windows")]
             if matches!(event, tauri::WindowEvent::Resized(_)) {
+                window
+                    .app_handle()
+                    .state::<WindowRuntime>()
+                    .protect_focus(Duration::from_millis(500));
                 let _ = refresh_windows_rounded_region(window);
             }
             if matches!(event, tauri::WindowEvent::Focused(false)) {
-                let _ = window.hide();
+                if window.app_handle().state::<WindowRuntime>().should_hide() {
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             scan_apps,
             launch_app,
             choose_folder,
-            choose_app,
+            choose_apps,
+            desktop_apps,
             open_plugin_directory,
             clipboard_text,
             open_external_url,
@@ -1672,8 +1882,11 @@ mod extension_storage_tests {
         for path in [
             "C:/Start Menu/Uninstall IDM.lnk",
             "C:/Start Menu/卸载微信.lnk",
+            "C:/Start Menu/SoapUI 5.9.1 Uninstall.lnk",
             "C:/Program Files/App/unins000.exe",
             "C:/Program Files/App/Updater.exe",
+            "C:/Windows/System32/Administrative Tools.lnk",
+            "C:/Windows/System32/Task Manager.lnk",
         ] {
             assert!(looks_like_windows_non_app(Path::new(path)), "{path}");
         }
