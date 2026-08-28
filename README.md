@@ -1,4 +1,4 @@
-# 启喵 / Qimiao
+# 启喵 / qimiao
 
 **智能跨平台启动器**
 
@@ -6,7 +6,7 @@
 
 启喵使用 Tauri 2、Rust、React 和 TypeScript 构建，支持 macOS、Windows 与 Linux。它把应用启动、中文与拼音搜索、智能推荐和 AI 查询统一到一个轻量窗口中。
 
-Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app discovery, bilingual search, recommendations, and AI queries into one lightweight window.
+qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It brings app discovery, bilingual search, recommendations, and AI queries into one lightweight window.
 
 ## 截图 / Screenshot
 

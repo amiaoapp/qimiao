@@ -1159,7 +1159,7 @@ fn scan_extension_commands_in(root: &Path) -> Vec<ExtensionCommand> {
                 .to_owned();
             // Menu-bar commands require a persistent native menu host. Do not
             // advertise them as runnable launcher commands. A command without
-            // its pre-built bundle is likewise not executable in Qimiao.
+            // its pre-built bundle is likewise not executable in qimiao.
             if mode == "menu-bar"
                 || !dir
                     .join(".sc-build")
@@ -1268,7 +1268,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("Qimiao/0.9.1")
+        .user_agent("qimiao/0.9.5")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1311,7 +1311,7 @@ async fn install_extension(
         urlencoding::encode(&source_name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("Qimiao/0.9.1")
+        .user_agent("qimiao/0.9.5")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client
@@ -1954,7 +1954,7 @@ pub fn run() {
             suspend_global_shortcuts
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Qimiao");
+        .expect("error while running qimiao");
 }
 
 #[cfg(any())]
@@ -2071,7 +2071,7 @@ mod tests {
         fs::create_dir_all(extension.join(".sc-build")).unwrap();
         fs::write(
             extension.join("package.json"),
-            r#"{"name":"@community/hello-world","title":"Hello World","author":"Qimiao","commands":[{"name":"hello","title":"Hello","description":"A real Raycast-format command","mode":"view"}]}"#,
+            r#"{"name":"@community/hello-world","title":"Hello World","author":"qimiao","commands":[{"name":"hello","title":"Hello","description":"A real Raycast-format command","mode":"view"}]}"#,
         )
         .unwrap();
         fs::write(

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "启喵",
-  "version": "0.10.0",
+  "version": "0.9.5",
   "identifier": "com.appmiao.miaoqi",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -47,6 +47,6 @@
     "macOS": { "signingIdentity": "-" },
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "启喵：智能跨平台应用启动器 / Qimiao smart cross-platform launcher"
+    "shortDescription": "启喵：智能跨平台应用启动器 / qimiao smart cross-platform launcher"
   }
 }

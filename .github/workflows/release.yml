@@ -66,7 +66,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 v__VERSION__
           releaseBody: |
-            启喵 / Qimiao 跨平台安装包。
+            启喵 / qimiao 跨平台安装包。
 
             - 移除扩展与插件系统，让启动器回归应用管理、搜索和 AI 查询
             - 扫描结果二次确认改为可选；刷新时自动清理已经卸载的应用
@@ -75,7 +75,7 @@ jobs:
             - Esc 可直接隐藏主窗口；右键菜单会自动避开窗口边缘并在内容过多时滚动
             - 修复 macOS 液态玻璃窗口四角的透明直角残影
 
-            Qimiao 0.10 removes the extension system, adds optional scan review, automatic cleanup for uninstalled apps, scrollable categories, portable backup/restore, Escape-to-hide, safer context-menu placement, and improved macOS corner clipping.
+            qimiao 0.9.5 removes the extension system, adds optional scan review, automatic cleanup for uninstalled apps, scrollable categories, portable backup/restore, Escape-to-hide, safer context-menu placement, and improved macOS corner clipping.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

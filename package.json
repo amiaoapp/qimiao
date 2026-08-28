@@ -1,7 +1,7 @@
 {
-  "name": "qimao-launcher",
+  "name": "qimiao-launcher",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.9.5",
   "type": "module",
   "scripts": {
     "dev": "vite",

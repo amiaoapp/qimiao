@@ -156,7 +156,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.10.0";
+const APP_VERSION = "0.9.5";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -498,7 +498,7 @@ export default function App() {
       } else if (!silent)
         showToast(
           settings.language === "en"
-            ? "Qimiao is up to date"
+            ? "qimiao is up to date"
             : "启喵已是最新版本",
         );
     } catch (error) {
@@ -580,7 +580,7 @@ export default function App() {
       };
       if (backup.format !== "qimiao-backup" || !Array.isArray(backup.apps))
         throw new Error(
-          settings.language === "en" ? "Invalid Qimiao backup" : "不是有效的启喵备份",
+          settings.language === "en" ? "Invalid qimiao backup" : "不是有效的启喵备份",
         );
       const restoredSettings: Settings = {
         ...defaultSettings,
@@ -1070,7 +1070,7 @@ function Header({
         ? "Search apps"
         : "搜索应用"
       : en
-        ? "Ask Qimao AI…"
+        ? "Ask qimiao AI…"
         : "问启喵 AI…";
   return (
     <header className="launchpad-header">
@@ -1484,7 +1484,7 @@ function AiPanel({ query, settings }: { query: string; settings: Settings }) {
         <Brain />
       </div>
       <div>
-        <span>浮引 AI · {settings.aiModel}</span>
+        <span>启喵 AI · {settings.aiModel}</span>
         <h2>{query}</h2>
         {answer ? (
           <p>{answer}</p>
@@ -1534,7 +1534,7 @@ function SettingsPage({
     <div className="settings-page">
       <PageHead
         title={en ? "Settings" : "设置"}
-        subtitle={en ? "Make Qimao work your way" : "让启喵按你的方式工作"}
+        subtitle={en ? "Make qimiao work your way" : "让启喵按你的方式工作"}
       />
       <SettingSection
         icon={<AppWindow />}
@@ -1641,7 +1641,7 @@ function SettingsPage({
               title={en ? "Scan at launch" : "启动时扫描"}
               desc={
                 en
-                  ? "Refresh the app list whenever Qimao opens"
+                  ? "Refresh the app list whenever qimiao opens"
                   : "每次打开启喵时更新应用列表"
               }
               checked={settings.scanOnLaunch}
@@ -1729,7 +1729,7 @@ function SettingsPage({
       <SettingSection icon={<Keyboard />} title={en ? "Hotkey" : "快捷键"}>
         <div className="setting-row">
           <div>
-            <strong>{en ? "Show or hide Qimao" : "显示或隐藏启喵"}</strong>
+            <strong>{en ? "Show or hide qimiao" : "显示或隐藏启喵"}</strong>
             <span>
               {en
                 ? "Click the button, then press a new shortcut"
@@ -1788,7 +1788,7 @@ function SettingsPage({
         <ToggleRow
           title={en ? "Hide menu bar icon" : "隐藏菜单栏图标"}
           desc={
-            en ? "The global hotkey can still open Qimao" : "仍可使用快捷键唤起"
+            en ? "The global hotkey can still open qimiao" : "仍可使用快捷键唤起"
           }
           checked={settings.hideTray}
           onChange={(v) => update({ hideTray: v })}
@@ -1807,7 +1807,7 @@ function SettingsPage({
         </div>
         <div className="setting-row">
           <div>
-            <strong>{en ? "About Qimao" : "关于启喵"}</strong>
+            <strong>{en ? "About qimiao" : "关于启喵"}</strong>
             <span>
               {en
                 ? "Version, project and copyright information"
@@ -2038,7 +2038,7 @@ function HotkeyRecorder({
     </div>
   );
 }
-/* Plugin system removed in 0.10.0. The legacy UI is kept commented in this
+/* Plugin system removed in 0.9.5. The legacy UI is kept commented in this
    source revision only to make older local backups easier to migrate. */
 /*
 function PluginsPage({
@@ -2163,7 +2163,7 @@ function PluginsPage({
         title={en ? "Extensions" : "扩展"}
         subtitle={
           en
-            ? "Install and run Raycast-format extensions inside Qimiao"
+            ? "Install and run Raycast-format extensions inside qimiao"
             : "在启喵内部安装并运行 Raycast 格式扩展"
         }
       />
@@ -2195,10 +2195,10 @@ function PluginsPage({
               <Plug />
             </div>
             <section>
-              <h2>{en ? "Qimiao Extension Runtime" : "启喵扩展运行时"}</h2>
+              <h2>{en ? "qimiao Extension Runtime" : "启喵扩展运行时"}</h2>
               <p>
                 {en
-                  ? "Extensions are installed to Qimiao and run with its built-in Raycast API compatibility layer. No external app is launched."
+                  ? "Extensions are installed to qimiao and run with its built-in Raycast API compatibility layer. No external app is launched."
                   : "扩展直接安装到启喵，并由内置 Raycast API 兼容层运行，不会调用任何外部程序。"}
               </p>
               <div>
@@ -2266,7 +2266,7 @@ function PluginsPage({
               <h3>{en ? "No extensions installed" : "尚未安装扩展"}</h3>
               <p>
                 {en
-                  ? "Browse the store and install an extension directly into Qimiao."
+                  ? "Browse the store and install an extension directly into qimiao."
                   : "前往商店，把扩展直接安装到启喵。"}
               </p>
               <button className="primary" onClick={() => setTab("store")}>
@@ -2329,7 +2329,7 @@ function PluginsPage({
                         ? "Uninstall"
                         : "卸载"
                       : en
-                        ? "Install in Qimiao"
+                        ? "Install in qimiao"
                         : "安装到启喵"}
                 </button>
               </article>
@@ -2635,7 +2635,7 @@ function AboutDialog({
           <X />
         </button>
         <img src={appIconUrl} alt="启喵" />
-        <h2>{en ? "Qimiao" : "启喵"}</h2>
+        <h2>{en ? "qimiao" : "启喵"}</h2>
         <strong>v{APP_VERSION}</strong>
         <p>
           {en
@@ -2669,7 +2669,7 @@ function UpdateBanner({
     <section className="update-banner" role="status">
       <span className="update-arrow">↑</span>
       <div>
-        <strong>{en ? `Qimiao ${version} is available` : `启喵 ${version} 已发布`}</strong>
+        <strong>{en ? `qimiao ${version} is available` : `启喵 ${version} 已发布`}</strong>
         <small>
           {en
             ? `Current version ${APP_VERSION}. Updating is recommended.`
