@@ -319,6 +319,7 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setCategoryManager(false);
         setAboutOpen(false);
         setAvailableUpdate(null);
@@ -330,8 +331,8 @@ export default function App() {
         void hideLauncher();
       }
     };
-    addEventListener("keydown", key);
-    return () => removeEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
   }, []);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {

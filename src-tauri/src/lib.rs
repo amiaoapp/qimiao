@@ -1467,6 +1467,11 @@ fn set_tray_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn hide_launcher(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_auto_start(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     let manager = app.autolaunch();
     if enabled {
@@ -1504,6 +1509,8 @@ fn set_window_material(
             unsafe { &*(window.ns_window().map_err(|e| e.to_string())? as *const NSWindow) };
         if let Some(content) = ns_window.contentView() {
             if let Some(glass) = content.downcast_ref::<NSGlassEffectView>() {
+                glass.setCornerRadius(26.0);
+                glass.setClipsToBounds(true);
                 glass.setStyle(if material == "liquid" {
                     NSGlassEffectViewStyle::Clear
                 } else {
@@ -1801,6 +1808,8 @@ fn apply_native_glass(window: &tauri::WebviewWindow) -> tauri::Result<()> {
         glass.setStyle(NSGlassEffectViewStyle::Clear);
         glass.setTintColor(None);
         glass.setCornerRadius(26.0);
+        glass.setClipsToBounds(true);
+        content.setClipsToBounds(true);
         glass.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -1944,6 +1953,7 @@ pub fn run() {
             desktop_apps,
             open_external_url,
             set_tray_visible,
+            hide_launcher,
             set_auto_start,
             get_auto_start,
             set_window_material,

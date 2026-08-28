@@ -64,8 +64,8 @@ export async function importBackup(): Promise<string | null> {
 }
 export async function hideLauncher() {
   if (isTauri()) {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().hide();
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("hide_launcher");
   }
 }
 export async function setGlobalHotkey(
