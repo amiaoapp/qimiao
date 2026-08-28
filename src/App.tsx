@@ -156,15 +156,20 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.6";
+const APP_VERSION = "0.9.7";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
   const [settings, setSettings] = useState(() => {
-    const stored = load("float-settings", defaultSettings);
+    const stored = load<Partial<Settings>>("float-settings", {});
     const merged = { ...defaultSettings, ...stored };
     return isWindows
-      ? { ...merged, autoScanApps: false, scanOnLaunch: false }
+      ? {
+          ...merged,
+          autoScanApps: false,
+          scanOnLaunch: false,
+          hotkey: stored.hotkey || "CommandOrControl+Alt+Space",
+        }
       : merged;
   });
   const [apps, setApps] = useState<AppItem[]>(loadApps);
@@ -2018,6 +2023,7 @@ function HotkeyRecorder({
           onChange={(e) => apply(e.target.value)}
         >
           <option value="Alt+Space">⌥ Space</option>
+          <option value="CommandOrControl+Alt+Space">Ctrl/⌘ ⌥ Space</option>
           <option value="CommandOrControl+Space">⌘ Space</option>
           <option value="CommandOrControl+Shift+Space">⌘ ⇧ Space</option>
           <option value="Alt+Shift+Space">⌥ ⇧ Space</option>

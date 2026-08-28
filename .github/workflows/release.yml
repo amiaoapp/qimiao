@@ -68,13 +68,14 @@ jobs:
           releaseBody: |
             启喵 / qimiao 跨平台安装包。
 
-            - 修复 macOS 毛玻璃、纯色和液态玻璃窗口四角的透明直角残影
-            - Esc 改用原生命令隐藏窗口，在搜索框和弹窗中也能可靠生效
-            - 分类左右导航按钮与分类名称保持平齐
-            - 提高暗色模式下分类文字、背景和边框的对比度
-            - 移除液态玻璃右上角的紫色渐变与旧光效层
+            - 修复 Windows 安装后可能无法打开、进程静默退出的问题
+            - 系统快捷键被占用时不再中止程序启动
+            - 托盘初始化失败时保留任务栏入口，确保仍可打开主窗口
+            - Windows 新安装默认使用更少冲突的 Ctrl+Alt+Space
+            - 避免首次启动时因安装器或资源管理器短暂抢焦点而立即隐藏
+            - 新增 Windows 启动诊断日志：%LOCALAPPDATA%\\qimiao\\startup.log
 
-            qimiao 0.9.6 fixes native macOS corner clipping in glass and solid modes, makes Escape reliably hide the launcher, aligns category navigation, improves dark-mode category contrast, and removes the purple liquid-glass hotspot.
+            qimiao 0.9.7 fixes a Windows startup failure caused by reserved global shortcuts, makes shortcut and tray initialization non-fatal, preserves a taskbar fallback, and prevents the first window from disappearing while Windows hands over focus.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

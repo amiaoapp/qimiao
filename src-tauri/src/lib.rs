@@ -1268,7 +1268,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.6")
+        .user_agent("qimiao/0.9.7")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1311,7 +1311,7 @@ async fn install_extension(
         urlencoding::encode(&source_name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.6")
+        .user_agent("qimiao/0.9.7")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client
@@ -1824,7 +1824,60 @@ fn colorful_tray_icon() -> tauri::Result<tauri::image::Image<'static>> {
     tauri::image::Image::from_bytes(include_bytes!("../icons/tray-cat.png"))
 }
 
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItemBuilder::with_id("show", "显示启喵").build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "设置…").build(app)?;
+    let update = MenuItemBuilder::with_id("check_update", "检查更新…").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出启喵").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show, &settings, &update, &quit])
+        .build()?;
+    let tray = TrayIconBuilder::with_id("main-tray")
+        .tooltip("启喵")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .icon(colorful_tray_icon()?)
+        .icon_as_template(false);
+    tray.on_tray_icon_event(|tray, event| {
+        if matches!(
+            event,
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+        ) {
+            toggle_launcher(tray.app_handle())
+        }
+    })
+    .build(app)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn log_windows_startup(message: &str) {
+    use std::io::Write;
+
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qimiao");
+    if fs::create_dir_all(&root).is_err() {
+        return;
+    }
+    if let Ok(mut log) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("startup.log"))
+    {
+        let _ = writeln!(log, "{}: {message}", std::process::id());
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
+    #[cfg(not(target_os = "windows"))]
     let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
     tauri::Builder::default()
         .manage(ShortcutRuntime::default())
@@ -1859,43 +1912,39 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            app.global_shortcut().register(shortcut)?;
+            // Global shortcuts are optional. Alt+Space and other combinations
+            // are commonly reserved by Windows or another launcher. Treating a
+            // registration conflict as a setup error made release builds exit
+            // silently before either the main window or tray icon was created.
+            #[cfg(target_os = "windows")]
+            log_windows_startup("setup started");
+            if let Err(_error) = app.global_shortcut().register(shortcut) {
+                #[cfg(target_os = "windows")]
+                log_windows_startup(&format!("initial shortcut registration failed: {_error}"));
+            }
             #[cfg(target_os = "macos")]
             app.handle()
                 .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-            let show = MenuItemBuilder::with_id("show", "显示启喵").build(app)?;
-            let settings = MenuItemBuilder::with_id("settings", "设置…").build(app)?;
-            let update = MenuItemBuilder::with_id("check_update", "检查更新…").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "退出启喵").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .items(&[&show, &settings, &update, &quit])
-                .build()?;
-            let tray = TrayIconBuilder::with_id("main-tray")
-                .tooltip("启喵")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .icon(colorful_tray_icon()?)
-                .icon_as_template(false);
-            tray.on_tray_icon_event(|tray, event| {
-                if matches!(
-                    event,
-                    TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    }
-                ) {
-                    toggle_launcher(tray.app_handle())
+            // The tray is useful but must never prevent the launcher from
+            // opening. If it cannot be created, Windows keeps a taskbar entry
+            // so the user still has a reliable way back into the app.
+            let tray_ready = match install_tray(app) {
+                Ok(()) => true,
+                Err(_error) => {
+                    #[cfg(target_os = "windows")]
+                    log_windows_startup(&format!("tray creation failed: {_error}"));
+                    false
                 }
-            })
-            .build(app)?;
+            };
+            #[cfg(not(target_os = "windows"))]
+            let _ = tray_ready;
             if let Some(w) = app.get_webview_window("main") {
                 #[cfg(target_os = "windows")]
                 {
                     let _ = w.set_shadow(false);
                     let _ = w.set_decorations(false);
                     let _ = w.set_resizable(true);
-                    let _ = w.set_skip_taskbar(true);
+                    let _ = w.set_skip_taskbar(tray_ready);
                     let _ = w.set_min_size(Some(tauri::LogicalSize::new(770.0, 524.0)));
                     let _ = w.set_size(tauri::LogicalSize::new(957.0, 614.0));
                     let _ = apply_windows_rounded_region(&w);
@@ -1906,12 +1955,28 @@ pub fn run() {
                 if std::env::args().any(|arg| arg == "--autostart") {
                     let _ = w.hide();
                 } else {
+                    // Windows may keep the installer or Explorer in the
+                    // foreground for a moment after first launch. Give the
+                    // initial window enough time to become visible before the
+                    // regular "hide on blur" launcher behavior takes over.
+                    #[cfg(target_os = "windows")]
+                    app.state::<WindowRuntime>()
+                        .protect_focus(Duration::from_secs(8));
+                    #[cfg(not(target_os = "windows"))]
                     app.state::<WindowRuntime>()
                         .protect_focus(Duration::from_millis(1500));
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    if let Err(_error) = w.show() {
+                        #[cfg(target_os = "windows")]
+                        log_windows_startup(&format!("show main window failed: {_error}"));
+                    }
+                    if let Err(_error) = w.set_focus() {
+                        #[cfg(target_os = "windows")]
+                        log_windows_startup(&format!("focus main window failed: {_error}"));
+                    }
                 }
             }
+            #[cfg(target_os = "windows")]
+            log_windows_startup("setup completed");
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
