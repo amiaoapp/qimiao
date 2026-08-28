@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -45,6 +45,7 @@ struct AppItem {
     favorite: bool,
     manual: bool,
 }
+#[cfg(any())]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtensionCommand {
@@ -59,12 +60,14 @@ struct ExtensionCommand {
     icon: Option<String>,
     preferences: Vec<serde_json::Value>,
 }
+#[cfg(any())]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtensionAsset {
     path: String,
     data: String,
 }
+#[cfg(any())]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtensionBundle {
@@ -73,7 +76,8 @@ struct ExtensionBundle {
     assets: Vec<ExtensionAsset>,
     extension_path: String,
 }
-#[derive(Debug, Deserialize)]
+#[cfg(any())]
+#[derive(Debug, serde::Deserialize)]
 struct ExtensionBundleTicket {
     url: String,
 }
@@ -836,6 +840,17 @@ async fn scan_apps(extra_dirs: Vec<String>) -> Result<Vec<AppItem>, String> {
 }
 
 #[tauri::command]
+fn existing_app_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|value| {
+            let path = Path::new(value);
+            path.exists() && is_app(path)
+        })
+        .collect()
+}
+
+#[tauri::command]
 fn launch_app(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
@@ -888,6 +903,36 @@ fn choose_folder(state: tauri::State<WindowRuntime>) -> Option<String> {
     state.native_dialog_open.store(false, Ordering::SeqCst);
     state.protect_focus(Duration::from_millis(800));
     selected
+}
+
+#[tauri::command]
+fn export_backup(
+    state: tauri::State<WindowRuntime>,
+    contents: String,
+) -> Result<Option<String>, String> {
+    state.native_dialog_open.store(true, Ordering::SeqCst);
+    let selected = rfd::FileDialog::new()
+        .add_filter("启喵备份", &["json"])
+        .set_file_name("启喵备份.json")
+        .save_file();
+    state.native_dialog_open.store(false, Ordering::SeqCst);
+    state.protect_focus(Duration::from_millis(900));
+    let Some(path) = selected else { return Ok(None) };
+    fs::write(&path, contents).map_err(|error| error.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn import_backup(state: tauri::State<WindowRuntime>) -> Result<Option<String>, String> {
+    state.native_dialog_open.store(true, Ordering::SeqCst);
+    let selected = rfd::FileDialog::new()
+        .add_filter("启喵备份", &["json"])
+        .pick_file();
+    state.native_dialog_open.store(false, Ordering::SeqCst);
+    state.protect_focus(Duration::from_millis(900));
+    selected
+        .map(|path| fs::read_to_string(path).map_err(|error| error.to_string()))
+        .transpose()
 }
 
 #[tauri::command]
@@ -951,6 +996,7 @@ fn desktop_apps() -> Vec<AppItem> {
 }
 
 #[tauri::command]
+#[cfg(any())]
 fn open_plugin_directory(app: tauri::AppHandle) -> Result<String, String> {
     let dir = extensions_dir(&app)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -965,6 +1011,7 @@ fn open_plugin_directory(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[cfg(any())]
 fn clipboard_text() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     let output = Command::new("pbpaste").output();
@@ -1012,6 +1059,10 @@ fn open_external_url(url: String) -> Result<(), String> {
     };
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
+
+#[cfg(any())]
+mod removed_extension_runtime {
+use super::*;
 
 fn extensions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -1404,6 +1455,7 @@ fn load_extension_command(
         assets,
         extension_path: dir.to_string_lossy().into_owned(),
     })
+}
 }
 
 #[tauri::command]
@@ -1883,12 +1935,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan_apps,
+            existing_app_paths,
             launch_app,
             choose_folder,
+            export_backup,
+            import_backup,
             choose_apps,
             desktop_apps,
-            open_plugin_directory,
-            clipboard_text,
             open_external_url,
             set_tray_visible,
             set_auto_start,
@@ -1898,18 +1951,13 @@ pub fn run() {
             load_app_icon,
             open_macos_permission,
             set_global_shortcut,
-            suspend_global_shortcuts,
-            scan_extension_commands,
-            fetch_extension_catalog,
-            install_extension,
-            uninstall_extension,
-            load_extension_command
+            suspend_global_shortcuts
         ])
         .run(tauri::generate_context!())
         .expect("error while running Qimiao");
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod extension_storage_tests {
     use super::*;
 
@@ -2011,6 +2059,7 @@ mod tests {
             assert!(value.parse::<Shortcut>().is_ok(), "{value}");
         }
     }
+    #[cfg(any())]
     #[test]
     fn scans_raycast_format_extension_from_qimao_directory() {
         let root = std::env::temp_dir().join(format!(

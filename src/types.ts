@@ -21,58 +21,6 @@ export type SortBy =
   | "recentUsed"
   | "recentInstalled"
   | "mostUsed";
-export type PluginKind =
-  | "calculator"
-  | "clipboard"
-  | "links"
-  | "translate"
-  | "supercmd";
-export type ExtensionCommand = {
-  id: string;
-  extensionName: string;
-  extensionTitle: string;
-  owner?: string;
-  commandName: string;
-  title: string;
-  description: string;
-  mode: string;
-  icon?: string;
-  preferences: Array<{
-    name: string;
-    type?: string;
-    title?: string;
-    label?: string;
-    description?: string;
-    placeholder?: string;
-    required?: boolean;
-    default?: unknown;
-    data?: Array<{ title?: string; value?: string }>;
-  }>;
-};
-export type ExtensionAsset = { path: string; data: string };
-export type ExtensionBundle = {
-  command: ExtensionCommand;
-  code: string;
-  assets: ExtensionAsset[];
-  extensionPath: string;
-};
-export type ExtensionCatalogEntry = {
-  id: string;
-  name: string;
-  title: string;
-  description: string;
-  author: string;
-  owner?: string;
-  iconUrl?: string;
-  platforms: string[];
-  installCount: number;
-  commands: Array<{
-    name: string;
-    title: string;
-    description?: string;
-    mode: string;
-  }>;
-};
 export type Settings = {
   language: "zh" | "en";
   theme: Theme;
@@ -83,6 +31,7 @@ export type Settings = {
   showRecommendations: boolean;
   autoScanApps: boolean;
   scanOnLaunch: boolean;
+  confirmScanResults: boolean;
   scanDirs: string[];
   hotkey: string;
   hideTray: boolean;
@@ -91,7 +40,6 @@ export type Settings = {
   aiEndpoint: string;
   aiModel: string;
   apiKey: string;
-  pluginShortcuts: Record<PluginKind, string>;
 };
 export const defaultSettings: Settings = {
   language: "zh",
@@ -103,6 +51,7 @@ export const defaultSettings: Settings = {
   showRecommendations: true,
   autoScanApps: false,
   scanOnLaunch: false,
+  confirmScanResults: false,
   scanDirs: [],
   hotkey: "Alt+Space",
   hideTray: false,
@@ -111,11 +60,4 @@ export const defaultSettings: Settings = {
   aiEndpoint: "https://api.openai.com/v1/chat/completions",
   aiModel: "gpt-4o-mini",
   apiKey: "",
-  pluginShortcuts: {
-    calculator: "=",
-    clipboard: "V",
-    links: "L",
-    translate: "T",
-    supercmd: "S",
-  },
 };

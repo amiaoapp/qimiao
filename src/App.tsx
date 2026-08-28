@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   Sparkles,
@@ -25,47 +25,40 @@ import {
   Check,
   ChevronLeft,
   Info,
-  Blocks,
   Contrast,
   RotateCw,
   SlidersHorizontal,
+  Download,
+  Upload,
+  DatabaseBackup,
 } from "lucide-react";
 import {
   defaultSettings,
   type AppItem,
-  type ExtensionBundle,
-  type ExtensionCommand,
-  type PluginKind,
   type Settings,
-  type ExtensionCatalogEntry,
 } from "./types";
 import {
   chooseApps,
   chooseFolder,
   desktopApps,
-  fetchExtensionCatalog,
+  existingAppPaths,
+  exportBackup,
   getAutoStart,
   hideLauncher,
-  installExtension,
+  importBackup,
   launchApp,
   loadAppIcon,
-  loadExtensionCommand,
   openExternalUrl,
   openMacosPermission,
-  openPluginDirectory,
-  readClipboardText,
   readIcon,
   scanApps,
-  scanExtensionCommands,
   setAutoStart,
   setGlobalHotkey,
   setTrayVisible,
   setWindowMaterial,
   suspendGlobalHotkeys,
-  uninstallExtension,
 } from "./tauri";
 import { pinyin } from "pinyin-pro";
-import { ExtensionRuntime } from "./raycast-runtime";
 
 const load = <T,>(key: string, fallback: T): T => {
   try {
@@ -163,31 +156,13 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.4";
+const APP_VERSION = "0.10.0";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
-const pluginNames: Record<
-  PluginKind,
-  { zh: string; en: string; icon: string }
-> = {
-  calculator: { zh: "计算器", en: "Calculator", icon: "∑" },
-  clipboard: { zh: "剪贴板", en: "Clipboard", icon: "⌘" },
-  links: { zh: "快速链接", en: "Quick Links", icon: "↗" },
-  translate: { zh: "翻译", en: "Translate", icon: "译" },
-  supercmd: { zh: "扩展命令", en: "Extension Commands", icon: "⌁" },
-};
-
 export default function App() {
   const [settings, setSettings] = useState(() => {
     const stored = load("float-settings", defaultSettings);
-    const merged = {
-      ...defaultSettings,
-      ...stored,
-      pluginShortcuts: {
-        ...defaultSettings.pluginShortcuts,
-        ...stored.pluginShortcuts,
-      },
-    };
+    const merged = { ...defaultSettings, ...stored };
     return isWindows
       ? { ...merged, autoScanApps: false, scanOnLaunch: false }
       : merged;
@@ -195,14 +170,11 @@ export default function App() {
   const [apps, setApps] = useState<AppItem[]>(loadApps);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"apps" | "ai">("apps");
-  const [page, setPage] = useState<"home" | "settings" | "plugins">("home");
+  const [page, setPage] = useState<"home" | "settings">("home");
   const [appPage, setAppPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("全部");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
-  const [pluginMode, setPluginMode] = useState<PluginKind | null>(null);
-  const [pluginResult, setPluginResult] = useState("");
-  const [pluginBusy, setPluginBusy] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<{
     version: string;
@@ -214,17 +186,13 @@ export default function App() {
     selected: string[];
   } | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
-  const [extensionCommands, setExtensionCommands] = useState<
-    ExtensionCommand[]
-  >([]);
-  const [activeExtension, setActiveExtension] =
-    useState<ExtensionBundle | null>(null);
   const [categoryManager, setCategoryManager] = useState(false);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(
     null,
   );
   const [toast, setToast] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const categoryStripRef = useRef<HTMLDivElement>(null);
   const wheelLock = useRef(false);
   const wheelDelta = useRef(0);
   const composingRef = useRef(false);
@@ -241,22 +209,50 @@ export default function App() {
     }
     setSettings((s) => ({ ...s, ...p }));
   };
+  function mergeApps(current: AppItem[], incoming: AppItem[]) {
+    const merged = new Map(current.map((app) => [app.path.toLowerCase(), app]));
+    for (const app of incoming) {
+      const previous = merged.get(app.path.toLowerCase());
+      merged.set(app.path.toLowerCase(), {
+        ...app,
+        manual: app.manual || previous?.manual || false,
+        favorite: previous?.favorite ?? app.favorite,
+        category: previous?.category,
+        launchCount: previous?.launchCount ?? app.launchCount,
+        lastUsed: previous?.lastUsed,
+      });
+    }
+    return [...merged.values()];
+  }
   async function refresh() {
     setBusy(true);
     try {
-      const found = await scanApps(settings.scanDirs);
-      setImportReview({
-        title:
-          settings.language === "en"
-            ? "Review scanned applications"
-            : "确认要添加的扫描结果",
-        apps: found,
-        selected: found.map((app) => app.id),
-      });
+      const [found, existing] = await Promise.all([
+        scanApps(settings.scanDirs),
+        existingAppPaths(apps.map((app) => app.path)),
+      ]);
+      const existingSet = new Set(existing.map((path) => path.toLowerCase()));
+      setApps((current) => current.filter((app) => existingSet.has(app.path.toLowerCase())));
+      if (settings.confirmScanResults) {
+        setImportReview({
+          title:
+            settings.language === "en"
+              ? "Review scanned applications"
+              : "确认要添加的扫描结果",
+          apps: found,
+          selected: found.map((app) => app.id),
+        });
+      } else {
+        setApps((current) => mergeApps(current, found));
+      }
       showToast(
         settings.language === "en"
-          ? `${found.length} candidates found`
-          : `发现 ${found.length} 个候选应用，请确认`,
+          ? settings.confirmScanResults
+            ? `${found.length} candidates found`
+            : `Refreshed ${found.length} applications`
+          : settings.confirmScanResults
+            ? `发现 ${found.length} 个候选应用，请确认`
+            : `已刷新 ${found.length} 个应用`,
       );
     } catch (e) {
       showToast(`扫描失败：${String(e)}`);
@@ -268,21 +264,7 @@ export default function App() {
     if (!importReview) return;
     const selected = new Set(importReview.selected);
     const chosen = importReview.apps.filter((app) => selected.has(app.id));
-    setApps((current) => {
-      const merged = new Map(current.map((app) => [app.path.toLowerCase(), app]));
-      for (const app of chosen) {
-        const previous = merged.get(app.path.toLowerCase());
-        merged.set(app.path.toLowerCase(), {
-          ...app,
-          manual: app.manual || previous?.manual || false,
-          favorite: previous?.favorite ?? app.favorite,
-          category: previous?.category,
-          launchCount: previous?.launchCount ?? app.launchCount,
-          lastUsed: previous?.lastUsed,
-        });
-      }
-      return [...merged.values()];
-    });
+    setApps((current) => mergeApps(current, chosen));
     setImportReview(null);
     showToast(
       settings.language === "en"
@@ -326,11 +308,6 @@ export default function App() {
   }, [settings.hotkey]);
   useEffect(() => persistApps(apps), [apps]);
   useEffect(() => {
-    scanExtensionCommands()
-      .then(setExtensionCommands)
-      .catch(() => setExtensionCommands([]));
-  }, []);
-  useEffect(() => {
     if (
       !isWindows &&
       settings.autoScanApps &&
@@ -342,48 +319,20 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (activeExtension) {
-          setActiveExtension(null);
-          return;
-        }
-        if (categoryManager) {
-          setCategoryManager(false);
-          return;
-        }
-        if (aboutOpen) {
-          setAboutOpen(false);
-          return;
-        }
-        if (availableUpdate) {
-          setAvailableUpdate(null);
-          return;
-        }
-        if (importReview) {
-          setImportReview(null);
-          return;
-        }
-        if (clearConfirm) {
-          setClearConfirm(false);
-          return;
-        }
-        if (page !== "home") {
-          setPage("home");
-          return;
-        }
-        if (menu || query || pluginMode) {
-          setMenu(null);
-          setQuery("");
-          setPluginMode(null);
-          setPluginResult("");
-          return;
-        }
+        setCategoryManager(false);
+        setAboutOpen(false);
+        setAvailableUpdate(null);
+        setImportReview(null);
+        setClearConfirm(false);
+        setPage("home");
         setMenu(null);
+        setQuery("");
         void hideLauncher();
       }
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [activeExtension, categoryManager, aboutOpen, availableUpdate, importReview, clearConfirm, page, menu, query, pluginMode]);
+  }, []);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -396,8 +345,6 @@ export default function App() {
     const prepareLauncher = () => {
       setPage("home");
       setMode("apps");
-      setPluginMode(null);
-      setPluginResult("");
       setQuery("");
       setAppPage(0);
       setSelectedSearchIndex(0);
@@ -598,111 +545,69 @@ export default function App() {
       selected: selected.map((app) => app.id),
     });
   }
-  async function runPlugin() {
-    if (!pluginMode) return;
-    const input = query.trim();
-    setPluginBusy(true);
-    setPluginResult("");
+  async function exportConfiguration() {
+    const backup = {
+      format: "qimiao-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: { ...settings, apiKey: "" },
+      apps,
+    };
     try {
-      if (pluginMode === "supercmd") {
-        const q = input.toLowerCase();
-        const command = extensionCommands.find(
-          (item) =>
-            !q ||
-            `${item.title} ${item.extensionTitle} ${item.description}`
-              .toLowerCase()
-              .includes(q),
+      const path = await exportBackup(JSON.stringify(backup, null, 2));
+      if (path)
+        showToast(
+          settings.language === "en"
+            ? "Backup exported (API key excluded)"
+            : "备份已导出（不包含 API Key）",
         );
-        if (!command)
-          throw new Error(
-            settings.language === "en"
-              ? "No installed extension command matched"
-              : "没有匹配的已安装扩展命令",
-          );
-        setActiveExtension(
-          await loadExtensionCommand(
-            command.extensionName,
-            command.commandName,
-          ),
-        );
-        setPluginResult(
-          `${settings.language === "en" ? "Loaded" : "已载入"} ${command.title}`,
-        );
-      } else if (pluginMode === "calculator") {
-        if (!input || !/^[\d\s+\-*/().%^]+$/.test(input))
-          throw new Error(
-            settings.language === "en"
-              ? "Enter a mathematical expression"
-              : "请输入数学表达式",
-          );
-        setPluginResult(
-          String(
-            Function(`"use strict";return (${input.replace(/\^/g, "**")})`)(),
-          ),
-        );
-      } else if (pluginMode === "clipboard") {
-        const text = await readClipboardText();
-        setPluginResult(
-          text ||
-            (settings.language === "en" ? "Clipboard is empty" : "剪贴板为空"),
-        );
-      } else if (pluginMode === "links") {
-        const links = load<{ name: string; url: string }[]>("miaoqi-links", []);
-        const match = links.find((link) =>
-          `${link.name} ${link.url}`
-            .toLowerCase()
-            .includes(input.toLowerCase()),
-        );
-        if (!match)
-          throw new Error(
-            settings.language === "en"
-              ? "No matching quick link"
-              : "没有匹配的快捷链接",
-          );
-        await openExternalUrl(match.url);
-        setPluginResult(
-          `${settings.language === "en" ? "Opened" : "已打开"} ${match.name}`,
-        );
-      } else {
-        if (!input)
-          throw new Error(
-            settings.language === "en"
-              ? "Enter text to translate"
-              : "请输入要翻译的内容",
-          );
-        if (!settings.apiKey)
-          throw new Error(
-            settings.language === "en"
-              ? "Configure an API key in Settings first"
-              : "请先在设置中配置 API Key",
-          );
-        const response = await fetch(settings.aiEndpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${settings.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: settings.aiModel,
-            messages: [
-              {
-                role: "user",
-                content: `Translate the following text to ${settings.language === "en" ? "Chinese" : "English"}. Return only the translation:\n${input}`,
-              },
-            ],
-          }),
-        });
-        const data = await response.json();
-        setPluginResult(
-          data.choices?.[0]?.message?.content ??
-            data.error?.message ??
-            "No response",
-        );
-      }
     } catch (error) {
-      setPluginResult(error instanceof Error ? error.message : String(error));
-    } finally {
-      setPluginBusy(false);
+      showToast(
+        settings.language === "en"
+          ? `Export failed: ${String(error)}`
+          : `导出失败：${String(error)}`,
+      );
+    }
+  }
+  async function importConfiguration() {
+    try {
+      const raw = await importBackup();
+      if (!raw) return;
+      const backup = JSON.parse(raw) as {
+        format?: string;
+        settings?: Partial<Settings>;
+        apps?: AppItem[];
+      };
+      if (backup.format !== "qimiao-backup" || !Array.isArray(backup.apps))
+        throw new Error(
+          settings.language === "en" ? "Invalid Qimiao backup" : "不是有效的启喵备份",
+        );
+      const restoredSettings: Settings = {
+        ...defaultSettings,
+        ...backup.settings,
+        apiKey: settings.apiKey,
+      };
+      setSettings(
+        isWindows
+          ? { ...restoredSettings, autoScanApps: false, scanOnLaunch: false }
+          : restoredSettings,
+      );
+      setApps(
+        backup.apps.filter(
+          (app) => app && typeof app.name === "string" && typeof app.path === "string",
+        ),
+      );
+      setCategory("全部");
+      setAppPage(0);
+      showToast(
+        settings.language === "en" ? "Backup restored" : "备份已恢复",
+      );
+    } catch (error) {
+      showToast(
+        settings.language === "en"
+          ? `Import failed: ${String(error)}`
+          : `导入失败：${String(error)}`,
+      );
     }
   }
   useEffect(() => {
@@ -714,35 +619,6 @@ export default function App() {
         event.keyCode === 229 ||
         Date.now() - compositionEndedAt.current < 140;
       if (ime) return;
-      if (
-        !pluginMode &&
-        mode === "apps" &&
-        !query &&
-        document.activeElement === searchRef.current &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.altKey &&
-        event.key.length === 1
-      ) {
-        const hit = (
-          Object.entries(settings.pluginShortcuts) as [PluginKind, string][]
-        ).find(
-          ([, shortcut]) => shortcut.toLowerCase() === event.key.toLowerCase(),
-        );
-        if (hit) {
-          event.preventDefault();
-          setPluginMode(hit[0]);
-          setPluginResult("");
-          return;
-        }
-      }
-      if (pluginMode) {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          void runPlugin();
-        }
-        return;
-      }
       if (mode !== "apps" || !query.trim() || !pageApps.length) return;
       const columns = settings.viewMode === "grid" ? 7 : 1;
       if (
@@ -774,17 +650,11 @@ export default function App() {
     page,
     mode,
     query,
-    pluginMode,
     menu,
     categoryManager,
     pageApps,
     selectedSearchIndex,
     settings.viewMode,
-    settings.pluginShortcuts,
-    settings.apiKey,
-    settings.aiEndpoint,
-    settings.aiModel,
-    settings.language,
   ]);
   function toggleFavorite(id: string) {
     setApps((x) =>
@@ -829,12 +699,6 @@ export default function App() {
                 setQuery={setQuery}
                 mode={mode}
                 setMode={setMode}
-                pluginMode={pluginMode}
-                onExitPlugin={() => {
-                  setPluginMode(null);
-                  setPluginResult("");
-                  setQuery("");
-                }}
                 onCompositionStart={() => {
                   composingRef.current = true;
                 }}
@@ -855,12 +719,30 @@ export default function App() {
                   })
                 }
                 onSettings={() => setPage("settings")}
-                onPlugins={() => setPage("plugins")}
                 onRefresh={refresh}
                 busy={busy}
               />
-              <div className="category-strip">
-                {categories.map((c) => (
+              <div className="category-nav">
+                <button
+                  className="category-arrow"
+                  aria-label={settings.language === "en" ? "Previous categories" : "向前查看分类"}
+                  onClick={() => categoryStripRef.current?.scrollBy({ left: -260, behavior: "smooth" })}
+                >
+                  <ChevronLeft />
+                </button>
+                <div
+                  className="category-strip"
+                  ref={categoryStripRef}
+                  onWheel={(event) => {
+                    const strip = categoryStripRef.current;
+                    if (!strip) return;
+                    event.preventDefault();
+                    strip.scrollLeft += Math.abs(event.deltaY) > Math.abs(event.deltaX)
+                      ? event.deltaY
+                      : event.deltaX;
+                  }}
+                >
+                  {categories.map((c) => (
                   <button
                     key={c}
                     className={category === c ? "active" : ""}
@@ -871,7 +753,15 @@ export default function App() {
                   >
                     {settings.language === "en" && c === "全部" ? "All" : c}
                   </button>
-                ))}
+                  ))}
+                </div>
+                <button
+                  className="category-arrow"
+                  aria-label={settings.language === "en" ? "Next categories" : "向后查看分类"}
+                  onClick={() => categoryStripRef.current?.scrollBy({ left: 260, behavior: "smooth" })}
+                >
+                  <ChevronRight />
+                </button>
                 <button
                   className="add-category"
                   title={
@@ -885,20 +775,7 @@ export default function App() {
                   {settings.language === "en" ? "Categories" : "管理分类"}
                 </button>
               </div>
-              {pluginMode ? (
-                <PluginCommandPanel
-                  kind={pluginMode}
-                  result={pluginResult}
-                  busy={pluginBusy}
-                  language={settings.language}
-                  onRun={() => void runPlugin()}
-                  onExit={() => {
-                    setPluginMode(null);
-                    setPluginResult("");
-                    setQuery("");
-                  }}
-                />
-              ) : mode === "ai" && query ? (
+              {mode === "ai" && query ? (
                 <AiPanel query={query} settings={settings} />
               ) : (
                 <>
@@ -1040,7 +917,7 @@ export default function App() {
                 </>
               )}
             </>
-          ) : page === "settings" ? (
+          ) : (
             <>
               <button className="back-home" onClick={() => setPage("home")}>
                 <ChevronLeft />
@@ -1055,41 +932,13 @@ export default function App() {
                 onClearApps={() => setClearConfirm(true)}
                 onCheckUpdate={() => void checkForUpdates()}
                 onAbout={() => setAboutOpen(true)}
-              />
-            </>
-          ) : (
-            <>
-              <button className="back-home" onClick={() => setPage("home")}>
-                <ChevronLeft />
-                {settings.language === "en" ? "Back to launcher" : "返回启动台"}
-              </button>
-              <PluginsPage
-                settings={settings}
-                update={updateSettings}
-                installedCommands={extensionCommands}
-                onCommands={setExtensionCommands}
-                onRun={async (command) =>
-                  setActiveExtension(
-                    await loadExtensionCommand(
-                      command.extensionName,
-                      command.commandName,
-                    ),
-                  )
-                }
-                onRefresh={() =>
-                  scanExtensionCommands().then(setExtensionCommands)
-                }
+                onExportBackup={() => void exportConfiguration()}
+                onImportBackup={() => void importConfiguration()}
               />
             </>
           )}
         </div>
       </section>
-      {activeExtension && (
-        <ExtensionRuntime
-          bundle={activeExtension}
-          onClose={() => setActiveExtension(null)}
-        />
-      )}
       {menu && (
         <ContextMenu
           app={apps.find((a) => a.id === menu.id)!}
@@ -1192,15 +1041,12 @@ function Header({
   setQuery,
   mode,
   setMode,
-  pluginMode,
-  onExitPlugin,
   onCompositionStart,
   onCompositionEnd,
   inputRef,
   theme,
   onTheme,
   onSettings,
-  onPlugins,
   onRefresh,
   busy,
 }: {
@@ -1209,25 +1055,17 @@ function Header({
   setQuery: (s: string) => void;
   mode: "apps" | "ai";
   setMode: (m: "apps" | "ai") => void;
-  pluginMode: PluginKind | null;
-  onExitPlugin: () => void;
   onCompositionStart: () => void;
   onCompositionEnd: () => void;
   inputRef: React.RefObject<HTMLInputElement>;
   theme: Settings["theme"];
   onTheme: () => void;
   onSettings: () => void;
-  onPlugins: () => void;
   onRefresh: () => void;
   busy: boolean;
 }) {
   const en = language === "en";
-  const plugin = pluginMode ? pluginNames[pluginMode] : null;
-  const placeholder = plugin
-    ? en
-      ? `${plugin.en}: type and press Enter`
-      : `${plugin.zh}：输入内容后按回车`
-    : mode === "apps"
+  const placeholder = mode === "apps"
       ? en
         ? "Search apps"
         : "搜索应用"
@@ -1236,14 +1074,8 @@ function Header({
         : "问启喵 AI…";
   return (
     <header className="launchpad-header">
-      <div className={`search-wrap ${pluginMode ? "plugin-active" : ""}`}>
+      <div className="search-wrap">
         <Search />
-        {plugin && (
-          <span className="plugin-mode-badge">
-            <b>{plugin.icon}</b>
-            {en ? plugin.en : plugin.zh}
-          </span>
-        )}
         <input
           ref={inputRef}
           value={query}
@@ -1252,8 +1084,8 @@ function Header({
           onCompositionEnd={onCompositionEnd}
           placeholder={placeholder}
         />
-        {(query || pluginMode) && (
-          <button onClick={() => (pluginMode ? onExitPlugin() : setQuery(""))}>
+        {query && (
+          <button onClick={() => setQuery("")}>
             <X />
           </button>
         )}
@@ -1263,20 +1095,14 @@ function Header({
         <div className="mode-switch">
           <button
             className={mode === "apps" ? "active" : ""}
-            onClick={() => {
-              onExitPlugin();
-              setMode("apps");
-            }}
+            onClick={() => setMode("apps")}
           >
             <AppWindow />
             {en ? "Apps" : "应用"}
           </button>
           <button
             className={mode === "ai" ? "active" : ""}
-            onClick={() => {
-              onExitPlugin();
-              setMode("ai");
-            }}
+            onClick={() => setMode("ai")}
           >
             <Brain />
             AI
@@ -1288,13 +1114,6 @@ function Header({
           onClick={onTheme}
         >
           <Contrast />
-        </button>
-        <button
-          className="icon-btn"
-          title={en ? "Extensions" : "扩展"}
-          onClick={onPlugins}
-        >
-          <Blocks />
         </button>
         {!isWindows && (
           <button
@@ -1484,12 +1303,22 @@ function ContextMenu({
   onCategory: (s: string) => void;
   onRemove: () => void;
 }) {
-  const left = Math.max(8, Math.min(x, window.innerWidth - 198)),
-    top = Math.max(8, Math.min(y, window.innerHeight - 340));
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: x, top: y });
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const margin = 8;
+    setPosition({
+      left: Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin)),
+      top: Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin)),
+    });
+  }, [x, y, categories.length]);
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <div className="context-menu" style={{ left, top }}>
+      <div ref={menuRef} className="context-menu" style={position}>
         <div className="context-head">
           <div>
             <strong>{app.name}</strong>
@@ -1681,6 +1510,8 @@ function SettingsPage({
   onClearApps,
   onCheckUpdate,
   onAbout,
+  onExportBackup,
+  onImportBackup,
 }: {
   settings: Settings;
   update: (p: Partial<Settings>) => void;
@@ -1690,6 +1521,8 @@ function SettingsPage({
   onClearApps: () => void;
   onCheckUpdate: () => void;
   onAbout: () => void;
+  onExportBackup: () => void;
+  onImportBackup: () => void;
 }) {
   const en = settings.language === "en";
   async function addDir() {
@@ -1813,6 +1646,16 @@ function SettingsPage({
               }
               checked={settings.scanOnLaunch}
               onChange={(v) => update({ scanOnLaunch: v })}
+            />
+            <ToggleRow
+              title={en ? "Review scan results" : "扫描结果二次确认"}
+              desc={
+                en
+                  ? "Show a selection dialog after each refresh; turn off to import automatically"
+                  : "开启后每次刷新都弹出选择窗口；关闭后直接导入"
+              }
+              checked={settings.confirmScanResults}
+              onChange={(v) => update({ confirmScanResults: v })}
             />
           </>
         )}
@@ -1975,6 +1818,31 @@ function SettingsPage({
             <Info />
             {en ? "About" : "关于"}
           </button>
+        </div>
+      </SettingSection>
+      <SettingSection
+        icon={<DatabaseBackup />}
+        title={en ? "Backup and restore" : "配置备份与恢复"}
+      >
+        <div className="setting-row">
+          <div>
+            <strong>{en ? "Portable configuration" : "迁移全部配置"}</strong>
+            <span>
+              {en
+                ? "Export apps, categories and settings. API keys are never included."
+                : "导出应用、分类与设置；为安全起见不会包含 API Key"}
+            </span>
+          </div>
+          <div className="setting-actions">
+            <button className="secondary" onClick={onExportBackup}>
+              <Download />
+              {en ? "Export" : "导出备份"}
+            </button>
+            <button className="secondary" onClick={onImportBackup}>
+              <Upload />
+              {en ? "Import" : "导入恢复"}
+            </button>
+          </div>
         </div>
       </SettingSection>
     </div>
@@ -2170,6 +2038,9 @@ function HotkeyRecorder({
     </div>
   );
 }
+/* Plugin system removed in 0.10.0. The legacy UI is kept commented in this
+   source revision only to make older local backups easier to migrate. */
+/*
 function PluginsPage({
   settings,
   update,
@@ -2554,7 +2425,7 @@ function PluginTool({
     setBusy(true);
     try {
       if (kind === "calculator") {
-        if (!/^[\d\s+\-*/().%^]+$/.test(input))
+        if (!new RegExp("^[\\d\\s+\\-/*().%^]+$").test(input))
           throw new Error(
             en
               ? "Only mathematical expressions are allowed"
@@ -2747,6 +2618,7 @@ function PluginCommandPanel({
     </section>
   );
 }
+*/
 function AboutDialog({
   language,
   onClose,

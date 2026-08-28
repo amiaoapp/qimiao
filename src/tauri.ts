@@ -1,9 +1,4 @@
-import type {
-  AppItem,
-  ExtensionBundle,
-  ExtensionCatalogEntry,
-  ExtensionCommand,
-} from "./types";
+import type { AppItem } from "./types";
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 export async function scanApps(extra: string[]): Promise<AppItem[]> {
   if (isTauri()) {
@@ -38,6 +33,34 @@ export async function desktopApps(): Promise<AppItem[]> {
     return invoke("desktop_apps");
   }
   return [];
+}
+export async function existingAppPaths(paths: string[]): Promise<string[]> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("existing_app_paths", { paths });
+  }
+  return paths;
+}
+export async function exportBackup(contents: string): Promise<string | null> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("export_backup", { contents });
+  }
+  const blob = new Blob([contents], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "启喵备份.json";
+  anchor.click();
+  URL.revokeObjectURL(url);
+  return "启喵备份.json";
+}
+export async function importBackup(): Promise<string | null> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("import_backup");
+  }
+  return null;
 }
 export async function hideLauncher() {
   if (isTauri()) {
@@ -80,20 +103,6 @@ export async function openMacosPermission(kind: "input" | "accessibility") {
     await invoke("open_macos_permission", { kind });
   }
 }
-export async function openPluginDirectory(): Promise<string> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("open_plugin_directory");
-  }
-  return "";
-}
-export async function readClipboardText(): Promise<string> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("clipboard_text");
-  }
-  return navigator.clipboard?.readText?.() ?? "";
-}
 export async function openExternalUrl(url: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -125,65 +134,6 @@ export async function setWindowMaterial(material: string, dark: boolean) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("set_window_material", { material, dark });
   }
-}
-export async function scanExtensionCommands(): Promise<ExtensionCommand[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("scan_extension_commands");
-  }
-  return [];
-}
-export async function fetchExtensionCatalog(
-  query = "",
-): Promise<ExtensionCatalogEntry[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("fetch_extension_catalog", { query });
-  }
-  const response = await fetch(
-    query.trim()
-      ? "https://api.supercmd.sh/extensions/catalog"
-      : "https://api.supercmd.sh/extensions/popular?limit=48",
-  );
-  if (!response.ok) throw new Error(String(response.status));
-  const catalog = (await response.json()) as ExtensionCatalogEntry[];
-  const normalized = query.trim().toLowerCase();
-  return (normalized
-    ? catalog.filter((item) =>
-        `${item.title} ${item.name} ${item.description} ${item.author}`
-          .toLowerCase()
-          .includes(normalized),
-      )
-    : catalog
-  ).slice(0, 48);
-}
-export async function installExtension(
-  extensionName: string,
-): Promise<ExtensionCommand[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("install_extension", { extensionName });
-  }
-  throw new Error("Extension installation requires the desktop app");
-}
-export async function uninstallExtension(
-  extensionName: string,
-): Promise<ExtensionCommand[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("uninstall_extension", { extensionName });
-  }
-  return [];
-}
-export async function loadExtensionCommand(
-  extensionName: string,
-  commandName: string,
-): Promise<ExtensionBundle> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("load_extension_command", { extensionName, commandName });
-  }
-  throw new Error("Extension runtime requires the desktop app");
 }
 const names = [
   "Arc",

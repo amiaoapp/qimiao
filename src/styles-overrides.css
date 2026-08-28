@@ -1,6 +1,7 @@
 /* 0.9: macOS Launchpad-like frost, opaque solid mode and compact Windows shell. */
 html,body,#root{min-width:700px;min-height:476px;background:transparent!important;border-radius:26px!important;clip-path:none!important;overflow:hidden}
 .stage,.launcher-shell{border-radius:26px!important;clip-path:none!important;overflow:hidden}.stage{background:transparent!important}.launcher-shell{position:relative;isolation:isolate}.launcher-shell:after{border-radius:25px!important}
+:root[data-platform=macos],:root[data-platform=macos] body,:root[data-platform=macos] #root,:root[data-platform=macos] .stage,:root[data-platform=macos] .launcher-shell{border-radius:26px!important;clip-path:inset(0 round 26px)!important;overflow:hidden!important}
 
 /* Frosted glass stays bright and translucent. Solid owns the old opaque look. */
 :root[data-material=glass] .launcher-shell{background:linear-gradient(135deg,rgba(248,250,255,.66),rgba(231,239,252,.52) 52%,rgba(246,234,255,.57))!important;backdrop-filter:blur(32px) saturate(155%) contrast(102%)!important;-webkit-backdrop-filter:blur(32px) saturate(155%) contrast(102%)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.72),inset 0 1px 0 rgba(255,255,255,.92),0 24px 68px rgba(35,47,75,.2)!important}
