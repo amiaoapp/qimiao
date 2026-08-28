@@ -1268,7 +1268,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.5")
+        .user_agent("qimiao/0.9.6")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1311,7 +1311,7 @@ async fn install_extension(
         urlencoding::encode(&source_name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.5")
+        .user_agent("qimiao/0.9.6")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client
