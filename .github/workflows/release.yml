@@ -68,14 +68,13 @@ jobs:
           releaseBody: |
             启喵 / qimiao 跨平台安装包。
 
-            - 修复 Windows 安装后可能无法打开、进程静默退出的问题
-            - 系统快捷键被占用时不再中止程序启动
-            - 托盘初始化失败时保留任务栏入口，确保仍可打开主窗口
-            - Windows 新安装默认使用更少冲突的 Ctrl+Alt+Space
-            - 避免首次启动时因安装器或资源管理器短暂抢焦点而立即隐藏
-            - 新增 Windows 启动诊断日志：%LOCALAPPDATA%\\qimiao\\startup.log
+            - 修复 macOS 液态玻璃下鼠标划过应用后可能遗留区块阴影的问题
+            - Windows 应用图标按有效像素统一裁切、缩放和居中
+            - 提高 Windows 毛玻璃背景密度，改善文字和图标可读性
+            - 自动检查更新支持启动时、每天、每周或仅手动四种频率
+            - 延续 v0.9.7 的 Windows 启动可靠性修复与诊断日志
 
-            qimiao 0.9.7 fixes a Windows startup failure caused by reserved global shortcuts, makes shortcut and tray initialization non-fatal, preserves a taskbar fallback, and prevents the first window from disappearing while Windows hands over focus.
+            qimiao 0.9.8 removes stale hover tiles from macOS liquid glass, normalizes Windows app icon sizing, strengthens Windows frosted glass, and adds configurable automatic update intervals.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

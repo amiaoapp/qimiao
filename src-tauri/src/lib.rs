@@ -253,11 +253,7 @@ fn color_for(name: &str) -> String {
     )
 }
 
-#[cfg(target_os = "macos")]
-fn normalize_icon(path: &Path) {
-    let Ok(source) = image::open(path).map(|i| i.to_rgba8()) else {
-        return;
-    };
+fn normalize_rgba_icon(source: image::RgbaImage) -> image::RgbaImage {
     let (w, h) = source.dimensions();
     let mut bounds = (w, h, 0, 0);
     for y in 0..h {
@@ -271,7 +267,7 @@ fn normalize_icon(path: &Path) {
         }
     }
     if bounds.2 <= bounds.0 || bounds.3 <= bounds.1 {
-        return;
+        return source;
     }
     let crop = image::imageops::crop_imm(
         &source,
@@ -292,7 +288,15 @@ fn normalize_icon(path: &Path) {
         ((160 - nw) / 2) as i64,
         ((160 - nh) / 2) as i64,
     );
-    let _ = canvas.save(path);
+    canvas
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_icon(path: &Path) {
+    let Ok(source) = image::open(path).map(|i| i.to_rgba8()) else {
+        return;
+    };
+    let _ = normalize_rgba_icon(source).save(path);
 }
 
 #[cfg(target_os = "macos")]
@@ -477,7 +481,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-shell-factory-v2:{}:{}:{}",
+                "windows-icon-shell-factory-v3:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -495,6 +499,7 @@ fn app_icon(path: &Path, name: &str) -> String {
     }
     let _ = fs::create_dir_all(&cache);
     windows_shell_icon(path)
+        .map(normalize_rgba_icon)
         .and_then(|image| image.save(&output_path).ok().map(|_| image))
         .and_then(|_| fs::read(&output_path).ok())
         .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
@@ -1268,7 +1273,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.7")
+        .user_agent("qimiao/0.9.8")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1311,7 +1316,7 @@ async fn install_extension(
         urlencoding::encode(&source_name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.7")
+        .user_agent("qimiao/0.9.8")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client

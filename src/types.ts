@@ -13,6 +13,7 @@ export type AppItem = {
 };
 export type Theme = "system" | "light" | "dark";
 export type Material = "glass" | "liquid" | "solid";
+export type UpdateCheckSchedule = "launch" | "daily" | "weekly" | "manual";
 export type ViewMode = "grid" | "list";
 export type SortBy =
   | "smart"
@@ -36,6 +37,7 @@ export type Settings = {
   hotkey: string;
   hideTray: boolean;
   autoStart: boolean;
+  updateCheckSchedule: UpdateCheckSchedule;
   aiProvider: string;
   aiEndpoint: string;
   aiModel: string;
@@ -56,6 +58,7 @@ export const defaultSettings: Settings = {
   hotkey: "Alt+Space",
   hideTray: false,
   autoStart: false,
+  updateCheckSchedule: "launch",
   aiProvider: "OpenAI Compatible",
   aiEndpoint: "https://api.openai.com/v1/chat/completions",
   aiModel: "gpt-4o-mini",

@@ -156,7 +156,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.7";
+const APP_VERSION = "0.9.8";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -508,15 +508,29 @@ export default function App() {
             : "启喵已是最新版本",
         );
     } catch (error) {
-      showToast(
-        settings.language === "en"
-          ? `Update check failed: ${String(error)}`
-          : `检查更新失败：${String(error)}`,
-      );
+      if (!silent)
+        showToast(
+          settings.language === "en"
+            ? `Update check failed: ${String(error)}`
+            : `检查更新失败：${String(error)}`,
+        );
     }
   }
   useEffect(() => {
-    const timer = window.setTimeout(() => void checkForUpdates(true), 1800);
+    const schedule = settings.updateCheckSchedule;
+    if (schedule === "manual") return;
+    const lastCheck = Number(localStorage.getItem("qimiao-last-update-check") || 0);
+    const interval =
+      schedule === "daily"
+        ? 24 * 60 * 60 * 1000
+        : schedule === "weekly"
+          ? 7 * 24 * 60 * 60 * 1000
+          : 0;
+    if (interval && Date.now() - lastCheck < interval) return;
+    const timer = window.setTimeout(() => {
+      localStorage.setItem("qimiao-last-update-check", String(Date.now()));
+      void checkForUpdates(true);
+    }, 1800);
     return () => window.clearTimeout(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1799,6 +1813,30 @@ function SettingsPage({
           checked={settings.hideTray}
           onChange={(v) => update({ hideTray: v })}
         />
+        <div className="setting-row">
+          <div>
+            <strong>{en ? "Automatic update checks" : "自动检查更新"}</strong>
+            <span>
+              {en
+                ? "Choose when qimiao checks GitHub for a new version"
+                : "选择启喵自动检查 GitHub 新版本的频率"}
+            </span>
+          </div>
+          <Segment
+            options={[
+              ["launch", en ? "At launch" : "启动时"],
+              ["daily", en ? "Daily" : "每天"],
+              ["weekly", en ? "Weekly" : "每周"],
+              ["manual", en ? "Manual" : "仅手动"],
+            ]}
+            value={settings.updateCheckSchedule}
+            onChange={(v) =>
+              update({
+                updateCheckSchedule: v as Settings["updateCheckSchedule"],
+              })
+            }
+          />
+        </div>
         <div className="setting-row">
           <div>
             <strong>{en ? "Check for updates" : "检查更新"}</strong>

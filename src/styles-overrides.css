@@ -33,6 +33,19 @@ html,body,#root{min-width:700px;min-height:476px;background:transparent!importan
 :root[data-platform=windows][data-theme=dark] .launcher-shell{box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)!important}
 :root[data-platform=windows] .launcher-shell:after{border-radius:23px!important}
 
+/* Liquid glass is composed by the native macOS layer. Translucent hover
+   fills and transforms create extra WebKit surfaces that can leave stale
+   rectangular tiles while the native glass highlight is moving. */
+:root[data-material=liquid] .launchpad .app-card{transition:none!important;transform:none!important;will-change:auto!important}
+:root[data-material=liquid] .launchpad .app-card:not(.keyboard-selected):hover{background:transparent!important;box-shadow:none!important;transform:none!important}
+:root[data-material=liquid] .launchpad .app-card.keyboard-selected{transform:none!important}
+
+/* Windows has no native NSGlassEffectView behind the webview, so its CSS
+   frost needs a denser tint than macOS to keep text and icons readable. */
+:root[data-platform=windows][data-material=glass] .launcher-shell{background:linear-gradient(135deg,rgba(248,250,255,.86),rgba(231,239,252,.79) 52%,rgba(246,238,255,.82))!important;backdrop-filter:blur(38px) saturate(140%) contrast(104%)!important;-webkit-backdrop-filter:blur(38px) saturate(140%) contrast(104%)!important}
+:root[data-platform=windows][data-theme=dark][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(48,56,74,.86),rgba(39,43,59,.82) 52%,rgba(53,44,67,.84))!important}
+@media(prefers-color-scheme:dark){:root[data-platform=windows][data-theme=system][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(48,56,74,.86),rgba(39,43,59,.82) 52%,rgba(53,44,67,.84))!important}}
+
 .update-banner{position:absolute;z-index:28;top:10px;left:50%;transform:translateX(-50%);width:min(610px,calc(100% - 52px));min-height:62px;padding:9px 10px 9px 12px;display:grid;grid-template-columns:38px minmax(0,1fr) auto 28px;gap:10px;align-items:center;border:1px solid rgba(255,255,255,.68);border-radius:17px;background:rgba(250,252,255,.9);backdrop-filter:blur(28px) saturate(150%);box-shadow:0 16px 44px rgba(29,43,68,.18)}
 :root[data-theme=dark] .update-banner{background:rgba(42,49,64,.94);border-color:rgba(255,255,255,.18)}
 .update-arrow{width:36px;height:36px;display:grid;place-items:center;border-radius:11px;background:linear-gradient(145deg,#b8ff68,#d8ff72);color:#244320;font-size:20px;font-weight:700}.update-banner>div{min-width:0;display:flex;flex-direction:column;gap:3px}.update-banner strong{font-size:12px}.update-banner small{color:var(--muted);font-size:9px}.update-banner .primary{height:36px;padding:0 14px;border-radius:10px;font-size:10px}.update-close{width:27px;height:27px;display:grid;place-items:center;color:var(--muted)}.update-close svg{width:14px}
