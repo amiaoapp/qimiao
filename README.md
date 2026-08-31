@@ -2,6 +2,8 @@
 
 **智能跨平台启动器**
 
+**说明：这个项目就自用了，感觉市面上启动器也挺多，我就不浪费时间造轮子了，所以慢更新，自己用着不顺手了再修改。
+
 > A smart cross-platform launcher by APP Miao.
 
 启喵使用 Tauri 2、Rust、React 和 TypeScript 构建，支持 macOS、Windows 与 Linux。它把应用启动、中文与拼音搜索、智能推荐和 AI 查询统一到一个轻量窗口中。
