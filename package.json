@@ -1,7 +1,9 @@
 {
   "name": "qimiao-launcher",
   "private": true,
-  "version": "0.9.8",
+  "version": "0.9.9",
+  "license": "AGPL-3.0-or-later",
+  "repository": "https://github.com/amiaoapp/qimiao",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -4,8 +4,9 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -44,6 +45,14 @@ struct AppItem {
     launch_count: u32,
     favorite: bool,
     manual: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileSearchResult {
+    name: String,
+    path: String,
+    is_dir: bool,
 }
 #[cfg(any())]
 #[derive(Debug, Serialize)]
@@ -917,7 +926,7 @@ fn export_backup(
 ) -> Result<Option<String>, String> {
     state.native_dialog_open.store(true, Ordering::SeqCst);
     let selected = rfd::FileDialog::new()
-        .add_filter("启喵备份", &["json"])
+        .add_filter("启喵 / qimiao JSON", &["json"])
         .set_file_name("启喵备份.json")
         .save_file();
     state.native_dialog_open.store(false, Ordering::SeqCst);
@@ -931,13 +940,165 @@ fn export_backup(
 fn import_backup(state: tauri::State<WindowRuntime>) -> Result<Option<String>, String> {
     state.native_dialog_open.store(true, Ordering::SeqCst);
     let selected = rfd::FileDialog::new()
-        .add_filter("启喵备份", &["json"])
+        .add_filter("启喵、TinyCast 或 Raycast", &["json", "tinycast"])
         .pick_file();
     state.native_dialog_open.store(false, Ordering::SeqCst);
     state.protect_focus(Duration::from_millis(900));
-    selected
-        .map(|path| fs::read_to_string(path).map_err(|error| error.to_string()))
-        .transpose()
+    selected.map(read_compatible_backup).transpose()
+}
+
+fn read_compatible_backup(path: PathBuf) -> Result<String, String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("tinycast") {
+        return fs::read_to_string(path).map_err(|error| error.to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return read_tinycast_archive(&path);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("TinyCast .tinycast archives can currently be imported on macOS. Export JSON data for cross-platform migration.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_tinycast_archive(path: &Path) -> Result<String, String> {
+    validate_tinycast_archive(path)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let staging = std::env::temp_dir().join(format!("qimiao-tinycast-import-{stamp}"));
+    fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    let status = Command::new("/usr/bin/aa")
+        .args(["extract", "-i"])
+        .arg(path)
+        .args(["-d"])
+        .arg(&staging)
+        .args([
+            "-include-path", "manifest.json",
+            "-include-path", "settings.json",
+            "-include-path", "snippets",
+            "-include-path", "notes",
+            "-include-path", "clipboard/items.jsonl",
+            "-exclude-type", "l",
+        ])
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err("TinyCast archive could not be extracted".into());
+    }
+    let result = (|| {
+        let settings_path = staging.join("settings.json");
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&settings_path)
+                .map_err(|_| "TinyCast archive has no readable settings.json")?,
+        ).map_err(|error| format!("TinyCast settings are invalid: {error}"))?;
+        let snippets = read_tinycast_markdown(&staging.join("snippets"), true)?;
+        let notes = read_tinycast_markdown(&staging.join("notes"), false)?;
+        let clipboard_entries = read_tinycast_clipboard(&staging.join("clipboard/items.jsonl"))?;
+        serde_json::to_string(&serde_json::json!({
+            "format": "tinycast-extracted",
+            "settings": settings,
+            "snippets": snippets,
+            "notes": notes,
+            "clipboardEntries": clipboard_entries,
+        })).map_err(|error| error.to_string())
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn validate_tinycast_archive(path: &Path) -> Result<(), String> {
+    let output = Command::new("/usr/bin/aa")
+        .args(["list", "-i"]).arg(path).args(["-list-format", "json"])
+        .output().map_err(|error| error.to_string())?;
+    if !output.status.success() { return Err("TinyCast archive cannot be listed".into()); }
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("TinyCast archive index is invalid: {error}"))?;
+    for entry in entries {
+        let kind = entry.get("TYP").and_then(|value| value.as_str()).unwrap_or("");
+        let path = entry.get("PAT").and_then(|value| value.as_str()).unwrap_or("");
+        if !matches!(kind, "F" | "D") { return Err("TinyCast archive contains an unsupported link or special entry".into()); }
+        let candidate = Path::new(path);
+        if candidate.is_absolute() || candidate.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+            return Err("TinyCast archive contains an unsafe path".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn read_tinycast_clipboard(path: &Path) -> Result<Vec<String>, String> {
+    if !path.is_file() { return Ok(Vec::new()); }
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    Ok(source.lines().filter_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if value.get("kind")?.as_str()? != "text" { return None; }
+        value.get("text")?.as_str().filter(|text| !text.is_empty()).map(str::to_string)
+    }).take(100).collect())
+}
+
+#[cfg(target_os = "macos")]
+fn read_tinycast_markdown(dir: &Path, snippets: bool) -> Result<Vec<serde_json::Value>, String> {
+    if !dir.is_dir() { return Ok(Vec::new()); }
+    let mut values = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_file() || path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        let fallback = path.file_stem().and_then(|value| value.to_str()).unwrap_or("Untitled")
+            .replace('-', " ");
+        if snippets {
+            let (meta, text) = parse_tinycast_snippet(&source);
+            values.push(serde_json::json!({
+                "name": meta.get("name").and_then(|value| value.as_str()).unwrap_or(&fallback),
+                "text": text,
+                "keyword": meta.get("keyword").and_then(|value| value.as_str()),
+                "isEnabled": meta.get("enabled").and_then(|value| value.as_bool()).unwrap_or(true),
+                "showsConfirmation": meta.get("show_confirmation").and_then(|value| value.as_bool()).unwrap_or(false),
+            }));
+        } else {
+            values.push(serde_json::json!({ "title": fallback, "content": source }));
+        }
+    }
+    Ok(values)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_tinycast_snippet(source: &str) -> (serde_json::Map<String, serde_json::Value>, String) {
+    let mut metadata = serde_json::Map::new();
+    let mut lines = source.split_inclusive('\n');
+    if lines.next().map(|line| line.trim_end_matches(['\r', '\n'])) != Some("---") {
+        return (metadata, source.to_string());
+    }
+    let mut consumed = source.find('\n').map(|index| index + 1).unwrap_or(source.len());
+    let mut found_end = false;
+    for line in lines {
+        consumed += line.len();
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed == "---" { found_end = true; break; }
+        if let Some((key, raw)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let raw = raw.trim();
+            if matches!(key, "name" | "keyword") {
+                if let Ok(value) = serde_json::from_str::<String>(raw) {
+                    metadata.insert(key.into(), serde_json::Value::String(value));
+                }
+            } else if matches!(key, "enabled" | "show_confirmation") {
+                if let Ok(value) = raw.parse::<bool>() {
+                    metadata.insert(key.into(), serde_json::Value::Bool(value));
+                }
+            }
+        }
+    }
+    if found_end { (metadata, source[consumed..].to_string()) } else { (serde_json::Map::new(), source.to_string()) }
 }
 
 #[tauri::command]
@@ -1016,7 +1177,6 @@ fn open_plugin_directory(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-#[cfg(any())]
 fn clipboard_text() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     let output = Command::new("pbpaste").output();
@@ -1040,10 +1200,355 @@ fn clipboard_text() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err("仅支持 http/https 链接".into());
+fn set_clipboard_text(text: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("pbcopy");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = hidden_windows_command("powershell");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$input | Out-String | Set-Clipboard",
+        ]);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.args(["-c", "wl-copy 2>/dev/null || xclip -selection clipboard"]);
+        command
+    };
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法写入剪贴板".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
     }
+}
+
+fn default_file_search_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let Some(home) = home else { return Vec::new() };
+    ["Desktop", "Documents", "Downloads"]
+        .into_iter()
+        .map(|name| home.join(name))
+        .filter(|path| path.exists())
+        .collect()
+}
+
+#[tauri::command]
+async fn search_files(
+    query: String,
+    roots: Vec<String>,
+    limit: usize,
+) -> Result<Vec<FileSearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let needle = query.trim().to_lowercase();
+        if needle.len() < 2 {
+            return Vec::new();
+        }
+        let roots: Vec<PathBuf> = if roots.is_empty() {
+            default_file_search_roots()
+        } else {
+            roots.into_iter().map(PathBuf::from).collect()
+        };
+        let mut found = Vec::new();
+        let maximum = limit.clamp(1, 100);
+        for root in roots.into_iter().filter(|root| root.exists()) {
+            for entry in WalkDir::new(root)
+                .max_depth(6)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| {
+                    entry.depth() == 0
+                        || !entry.file_name().to_string_lossy().starts_with('.')
+                })
+                .filter_map(Result::ok)
+            {
+                if entry.depth() == 0 {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy();
+                if !name.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                found.push(FileSearchResult {
+                    name: name.into_owned(),
+                    path: entry.path().to_string_lossy().into_owned(),
+                    is_dir: entry.file_type().is_dir(),
+                });
+                if found.len() >= maximum {
+                    return found;
+                }
+            }
+        }
+        found
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err("文件不存在".into());
+    }
+    launch_app(path)
+}
+
+#[tauri::command]
+fn list_apple_shortcuts() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("shortcuts")
+            .arg("list")
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect());
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+fn run_apple_shortcut(name: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("shortcuts")
+            .args(["run", &name])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = name;
+        Err("Apple 快捷指令仅支持 macOS".into())
+    }
+}
+
+#[tauri::command]
+fn run_system_action(action: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return run_macos_system_action(&action);
+    #[cfg(target_os = "windows")]
+    return run_windows_system_action(&action);
+    #[cfg(target_os = "linux")]
+    return run_linux_system_action(&action);
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_system_action(action: &str) -> Result<(), String> {
+    let mut command = match action {
+        "lock" => {
+            let mut value = Command::new("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession");
+            value.arg("-suspend"); value
+        }
+        "sleep" => { let mut value = Command::new("pmset"); value.arg("sleepnow"); value }
+        "sleep-displays" => { let mut value = Command::new("pmset"); value.arg("displaysleepnow"); value }
+        "show-screen-saver" => { let mut value = Command::new("open"); value.args(["-a", "ScreenSaverEngine"]); value }
+        "open-trash" => { let mut value = Command::new("open"); value.arg(std::env::var("HOME").map(|home| format!("{home}/.Trash")).unwrap_or_else(|_| "/.Trashes".into())); value }
+        "restart" => osascript("tell application \"System Events\" to restart"),
+        "shut-down" => osascript("tell application \"System Events\" to shut down"),
+        "log-out" => osascript("tell application \"System Events\" to log out"),
+        "empty-trash" => osascript("tell application \"Finder\" to empty trash"),
+        "play-pause" => osascript("tell application \"System Events\" to key code 16"),
+        "next-track" => osascript("tell application \"System Events\" to key code 17"),
+        "previous-track" => osascript("tell application \"System Events\" to key code 18"),
+        "toggle-mute" => osascript("set volume output muted not (output muted of (get volume settings))"),
+        "volume-up" => osascript("set volume output volume ((output volume of (get volume settings)) + 10)"),
+        "volume-down" => osascript("set volume output volume ((output volume of (get volume settings)) - 10)"),
+        "show-desktop" => osascript("tell application \"System Events\" to key code 103"),
+        "toggle-hidden-files" => osascript("set v to do shell script \"defaults read com.apple.finder AppleShowAllFiles 2>/dev/null || echo false\"\ndo shell script \"defaults write com.apple.finder AppleShowAllFiles -bool \" & (v is not \"1\" and v is not \"true\")\ntell application \"Finder\" to quit\ndelay 0.2\ntell application \"Finder\" to launch"),
+        _ => return Err("不支持的系统操作".into()),
+    };
+    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn osascript(script: &str) -> Command {
+    let mut command = Command::new("osascript");
+    command.args(["-e", script]);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_system_action(action: &str) -> Result<(), String> {
+    let mut command = match action {
+        "lock" => { let mut value = hidden_windows_command("rundll32.exe"); value.arg("user32.dll,LockWorkStation"); value }
+        "sleep" | "sleep-displays" => { let mut value = hidden_windows_command("rundll32.exe"); value.arg("powrprof.dll,SetSuspendState"); value }
+        "restart" => { let mut value = hidden_windows_command("shutdown.exe"); value.args(["/r", "/t", "0"]); value }
+        "shut-down" => { let mut value = hidden_windows_command("shutdown.exe"); value.args(["/s", "/t", "0"]); value }
+        "log-out" => { let mut value = hidden_windows_command("shutdown.exe"); value.arg("/l"); value }
+        "show-screen-saver" => { let mut value = hidden_windows_command("rundll32.exe"); value.arg("desk.cpl,InstallScreenSaver"); value }
+        "open-trash" => { let mut value = hidden_windows_command("explorer.exe"); value.arg("shell:RecycleBinFolder"); value }
+        "empty-trash" => powershell_action("Clear-RecycleBin -Force -ErrorAction Stop"),
+        "toggle-hidden-files" => powershell_action("$p='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced';$v=(Get-ItemProperty $p Hidden).Hidden;Set-ItemProperty $p Hidden (if($v -eq 1){2}else{1});Stop-Process -Name explorer -Force"),
+        "play-pause" => windows_media_key(0xB3),
+        "next-track" => windows_media_key(0xB0),
+        "previous-track" => windows_media_key(0xB1),
+        "toggle-mute" => windows_media_key(0xAD),
+        "volume-down" => windows_media_key(0xAE),
+        "volume-up" => windows_media_key(0xAF),
+        "show-desktop" => powershell_action("$s=New-Object -ComObject Shell.Application;$s.ToggleDesktop()"),
+        _ => return Err("不支持的系统操作".into()),
+    };
+    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_action(script: &str) -> Command {
+    let mut command = hidden_windows_command("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn windows_media_key(code: u8) -> Command {
+    powershell_action(&format!("Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QK{{[DllImport(\"user32.dll\")]public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e);}}';[QK]::keybd_event({code},0,0,[UIntPtr]::Zero);[QK]::keybd_event({code},0,2,[UIntPtr]::Zero)"))
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_system_action(action: &str) -> Result<(), String> {
+    let mut command = match action {
+        "lock" => { let mut value = Command::new("loginctl"); value.arg("lock-session"); value }
+        "sleep" | "sleep-displays" => { let mut value = Command::new("systemctl"); value.arg("suspend"); value }
+        "restart" => { let mut value = Command::new("systemctl"); value.arg("reboot"); value }
+        "shut-down" => { let mut value = Command::new("systemctl"); value.arg("poweroff"); value }
+        "log-out" => { let mut value = Command::new("loginctl"); value.arg("terminate-user").arg(std::env::var("USER").unwrap_or_default()); value }
+        "show-screen-saver" => { let mut value = Command::new("xdg-screensaver"); value.arg("activate"); value }
+        "open-trash" => { let mut value = Command::new("xdg-open"); value.arg("trash:///"); value }
+        "empty-trash" => { let mut value = Command::new("gio"); value.args(["trash", "--empty"]); value }
+        "play-pause" => { let mut value = Command::new("playerctl"); value.arg("play-pause"); value }
+        "next-track" => { let mut value = Command::new("playerctl"); value.arg("next"); value }
+        "previous-track" => { let mut value = Command::new("playerctl"); value.arg("previous"); value }
+        "toggle-mute" => { let mut value = Command::new("pactl"); value.args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"]); value }
+        "volume-up" => { let mut value = Command::new("pactl"); value.args(["set-sink-volume", "@DEFAULT_SINK@", "+10%"]); value }
+        "volume-down" => { let mut value = Command::new("pactl"); value.args(["set-sink-volume", "@DEFAULT_SINK@", "-10%"]); value }
+        "show-desktop" => { let mut value = Command::new("xdotool"); value.args(["key", "super+d"]); value }
+        _ => return Err("不支持的系统操作".into()),
+    };
+    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    let action = match action.as_str() {
+        "left" | "right" | "top" | "bottom" | "center" | "maximize" | "almost-maximize" | "maximize-width" | "maximize-height" => action,
+        _ => return Err("不支持的窗口操作".into()),
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+        std::thread::sleep(Duration::from_millis(180));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let geometry = match action.as_str() {
+            "left" => "set p to {x, y}\nset s to {w / 2, h}",
+            "right" => "set p to {x + w / 2, y}\nset s to {w / 2, h}",
+            "top" => "set p to {x, y}\nset s to {w, h / 2}",
+            "bottom" => "set p to {x, y + h / 2}\nset s to {w, h / 2}",
+            "center" => "set s to {w * 0.7, h * 0.7}\nset p to {x + w * 0.15, y + h * 0.15}",
+            "almost-maximize" => "set p to {x + 28, y + 28}\nset s to {w - 56, h - 56}",
+            "maximize-width" => "set oldS to size of front window\nset oldP to position of front window\nset p to {x, item 2 of oldP}\nset s to {w, item 2 of oldS}",
+            "maximize-height" => "set oldS to size of front window\nset oldP to position of front window\nset p to {item 1 of oldP, y}\nset s to {item 1 of oldS, h}",
+            _ => "set p to {x, y}\nset s to {w, h}",
+        };
+        let script = format!("tell application \"Finder\" to set b to bounds of window of desktop\nset x to item 1 of b\nset y to item 2 of b\nset w to item 3 of b - x\nset h to item 4 of b - y\ntell application \"System Events\" to tell first application process whose frontmost is true\n{geometry}\nset position of front window to p\nset size of front window to s\nend tell");
+        return Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|error| error.to_string())
+            .and_then(|output| if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).into_owned()) });
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let virtual_key = match action.as_str() {
+            "left" => "0x25",
+            "right" => "0x27",
+            "top" => "0x26",
+            "bottom" => "0x28",
+            _ => "0x26",
+        };
+        let alt = matches!(action.as_str(), "top" | "bottom");
+        if matches!(action.as_str(), "center" | "almost-maximize" | "maximize-width" | "maximize-height") {
+            let mode = action.clone();
+            let script = format!("Add-Type -AssemblyName System.Windows.Forms;Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int z,bool p);public struct R{{public int L,T,Ri,B;}}}}';$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;$wa=[System.Windows.Forms.Screen]::FromHandle($h).WorkingArea;$x=$wa.X;$y=$wa.Y;$w=$wa.Width;$z=$wa.Height;$m='{mode}';if($m -eq 'center'){{$x+=[int]($w*.15);$y+=[int]($z*.15);$w=[int]($w*.7);$z=[int]($z*.7)}}elseif($m -eq 'almost-maximize'){{$x+=28;$y+=28;$w-=56;$z-=56}}elseif($m -eq 'maximize-width'){{$y=$r.T;$z=$r.B-$r.T}}else{{$x=$r.L;$w=$r.Ri-$r.L}};[W]::MoveWindow($h,$x,$y,$w,$z,$true)|Out-Null");
+            return hidden_windows_command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn().map(|_| ()).map_err(|error| error.to_string());
+        }
+        let script = format!(
+            "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QK{{[DllImport(\"user32.dll\")]public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);}}';[QK]::keybd_event(0x5B,0,0,[UIntPtr]::Zero);{}[QK]::keybd_event({virtual_key},0,0,[UIntPtr]::Zero);[QK]::keybd_event({virtual_key},0,2,[UIntPtr]::Zero);{}[QK]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)",
+            if alt { "[QK]::keybd_event(0x12,0,0,[UIntPtr]::Zero);" } else { "" },
+            if alt { "[QK]::keybd_event(0x12,0,2,[UIntPtr]::Zero);" } else { "" },
+        );
+        return hidden_windows_command("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let keys = match action.as_str() {
+            "left" => "super+Left",
+            "right" => "super+Right",
+            "bottom" => "super+Down",
+            _ => "super+Up",
+        };
+        Command::new("xdotool")
+            .args(["key", keys])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn run_custom_command(program: String, args: Vec<String>) -> Result<(), String> {
+    if program.trim().is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
+        return Err("自定义命令无效".into());
+    }
+    #[cfg(target_os = "windows")]
+    let mut command = hidden_windows_command(&program);
+    #[cfg(not(target_os = "windows"))]
+    let mut command = Command::new(&program);
+    command.args(args).spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let Some((scheme, _)) = url.split_once(':') else { return Err("链接缺少协议".into()) };
+    if scheme.is_empty()
+        || !scheme.as_bytes().first().map(|value| value.is_ascii_alphabetic()).unwrap_or(false)
+        || !scheme.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '+' | '-' | '.'))
+        || scheme.eq_ignore_ascii_case("file")
+        || url.contains('\0')
+    { return Err("链接协议无效".into()); }
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut c = Command::new("open");
@@ -1052,8 +1557,8 @@ fn open_external_url(url: String) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut command = {
-        let mut c = hidden_windows_command("cmd");
-        c.args(["/C", "start", "", &url]);
+        let mut c = hidden_windows_command("rundll32.exe");
+        c.args(["url.dll,FileProtocolHandler", &url]);
         c
     };
     #[cfg(target_os = "linux")]
@@ -1273,7 +1778,7 @@ async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, Str
         "https://api.supercmd.sh/extensions/catalog"
     };
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.8")
+        .user_agent("qimiao/0.9.9")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1316,7 +1821,7 @@ async fn install_extension(
         urlencoding::encode(&source_name)
     );
     let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.8")
+        .user_agent("qimiao/0.9.9")
         .build()
         .map_err(|e| e.to_string())?;
     let ticket: ExtensionBundleTicket = client
@@ -2021,6 +2526,15 @@ pub fn run() {
             import_backup,
             choose_apps,
             desktop_apps,
+            clipboard_text,
+            set_clipboard_text,
+            search_files,
+            open_path,
+            list_apple_shortcuts,
+            run_apple_shortcut,
+            run_system_action,
+            run_window_action,
+            run_custom_command,
             open_external_url,
             set_tray_visible,
             hide_launcher,
@@ -2116,6 +2630,32 @@ mod extension_storage_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn imports_tinycast_archive_models() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("qimiao-tinycast-fixture-{stamp}"));
+        let source = root.join("source");
+        fs::create_dir_all(source.join("snippets")).unwrap();
+        fs::create_dir_all(source.join("notes")).unwrap();
+        fs::create_dir_all(source.join("clipboard")).unwrap();
+        fs::write(source.join("manifest.json"), r#"{"format":1,"appVersion":"1","createdAt":"2026-01-01T00:00:00Z","counts":{"settings":1}}"#).unwrap();
+        fs::write(source.join("settings.json"), r#"{"quicklinks":[{"name":"Search","link":"https://example.com?q={argument}"}],"customCommands":[]}"#).unwrap();
+        fs::write(source.join("snippets/greeting.md"), "---\nname: \"Greeting\"\nkeyword: \"!hi\"\nenabled: true\nshow_confirmation: false\n---\nHello {argument}").unwrap();
+        fs::write(source.join("notes/Plan.md"), "# Plan\n- [ ] Ship").unwrap();
+        fs::write(source.join("clipboard/items.jsonl"), "{\"kind\":\"text\",\"text\":\"Copied text\",\"createdAt\":\"2026-01-01T00:00:00Z\"}\n").unwrap();
+        let archive = root.join("fixture.tinycast");
+        let status = Command::new("/usr/bin/aa")
+            .args(["archive", "-d"]).arg(&source).args(["-o"]).arg(&archive)
+            .status().unwrap();
+        assert!(status.success());
+        let imported: serde_json::Value = serde_json::from_str(&read_tinycast_archive(&archive).unwrap()).unwrap();
+        assert_eq!(imported["settings"]["quicklinks"][0]["name"], "Search");
+        assert_eq!(imported["snippets"][0]["keyword"], "!hi");
+        assert_eq!(imported["notes"][0]["title"], "Plan");
+        assert_eq!(imported["clipboardEntries"][0], "Copied text");
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn extracts_real_png_icon() {
         let path = Path::new("/Applications/HandBrake.app");

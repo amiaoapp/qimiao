@@ -68,13 +68,14 @@ jobs:
           releaseBody: |
             启喵 / qimiao 跨平台安装包。
 
-            - 修复 macOS 液态玻璃下鼠标划过应用后可能遗留区块阴影的问题
-            - Windows 应用图标按有效像素统一裁切、缩放和居中
-            - 提高 Windows 毛玻璃背景密度，改善文字和图标可读性
-            - 自动检查更新支持启动时、每天、每周或仅手动四种频率
-            - 延续 v0.9.7 的 Windows 启动可靠性修复与诊断日志
+            - 项目整体切换为 GNU AGPL-3.0-or-later，并保留 TinyCast 上游版权与修改声明
+            - 新增 TinyCast 风格命令中心、剪贴板历史、文件搜索、计算换算、Emoji 与 Apple 快捷指令
+            - macOS 可直接导入 `.tinycast`，迁移 Quicklinks、Snippets、Notes、自定义命令与文本剪贴板历史
+            - 支持 TinyCast/Raycast 动态占位符、嵌套 Snippet、URL/路径/deeplink Quicklinks
+            - 扩展跨平台系统操作及窗口布局操作，危险操作强制确认
+            - 保留启喵 Launchpad 式应用主页和中英文界面
 
-            qimiao 0.9.8 removes stale hover tiles from macOS liquid glass, normalizes Windows app icon sizing, strengthens Windows frosted glass, and adds configurable automatic update intervals.
+            qimiao 0.9.9 adopts AGPL-3.0-or-later and introduces native TinyCast-compatible command models, imports, placeholders, command-center workflows, system actions, and window layouts while retaining qimiao's Launchpad home.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

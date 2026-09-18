@@ -135,6 +135,72 @@ export async function setWindowMaterial(material: string, dark: boolean) {
     await invoke("set_window_material", { material, dark });
   }
 }
+export type FileSearchResult = {
+  name: string;
+  path: string;
+  isDir: boolean;
+};
+export async function clipboardText(): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("clipboard_text");
+  }
+  return navigator.clipboard?.readText?.() ?? "";
+}
+export async function setClipboardText(text: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_clipboard_text", { text });
+  } else await navigator.clipboard?.writeText?.(text);
+}
+export async function searchFiles(
+  query: string,
+  roots: string[],
+  limit = 40,
+): Promise<FileSearchResult[]> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("search_files", { query, roots, limit });
+  }
+  return [];
+}
+export async function openPath(path: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_path", { path });
+  }
+}
+export async function listAppleShortcuts(): Promise<string[]> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("list_apple_shortcuts");
+  }
+  return [];
+}
+export async function runAppleShortcut(name: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("run_apple_shortcut", { name });
+  }
+}
+export async function runSystemAction(action: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("run_system_action", { action });
+  }
+}
+export async function runWindowAction(action: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("run_window_action", { action });
+  }
+}
+export async function runCustomCommand(program: string, args: string[]) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("run_custom_command", { program, args });
+  }
+}
 const names = [
   "Arc",
   "Calendar",

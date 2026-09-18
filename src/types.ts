@@ -14,6 +14,34 @@ export type AppItem = {
 export type Theme = "system" | "light" | "dark";
 export type Material = "glass" | "liquid" | "solid";
 export type UpdateCheckSchedule = "launch" | "daily" | "weekly" | "manual";
+export type LauncherMode = "apps" | "commands" | "clipboard" | "ai";
+export type CommandArgument = {
+  name: string;
+  optional?: boolean;
+  defaultValue?: string;
+  options?: string[];
+};
+export type CommandTool = {
+  id: string;
+  type: "quicklink" | "snippet" | "note" | "custom";
+  title: string;
+  content: string;
+  args?: string[];
+  arguments?: CommandArgument[];
+  alias?: string;
+  keyword?: string;
+  enabled?: boolean;
+  showsInRootSearch?: boolean;
+  pinnedAt?: string;
+  createdAt?: string;
+  openWithBundleID?: string;
+  iconSymbol?: string;
+  requiresConfirmation?: boolean;
+  showsConfirmation?: boolean;
+  showsOutput?: boolean;
+  workingDirectory?: string;
+  source?: "qimiao" | "tinycast" | "raycast";
+};
 export type ViewMode = "grid" | "list";
 export type SortBy =
   | "smart"
@@ -38,6 +66,8 @@ export type Settings = {
   hideTray: boolean;
   autoStart: boolean;
   updateCheckSchedule: UpdateCheckSchedule;
+  clipboardHistoryEnabled: boolean;
+  fileSearchDirs: string[];
   aiProvider: string;
   aiEndpoint: string;
   aiModel: string;
@@ -59,6 +89,8 @@ export const defaultSettings: Settings = {
   hideTray: false,
   autoStart: false,
   updateCheckSchedule: "launch",
+  clipboardHistoryEnabled: true,
+  fileSearchDirs: [],
   aiProvider: "OpenAI Compatible",
   aiEndpoint: "https://api.openai.com/v1/chat/completions",
   aiModel: "gpt-4o-mini",

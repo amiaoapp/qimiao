@@ -31,15 +31,20 @@ import {
   Download,
   Upload,
   DatabaseBackup,
+  Command as CommandIcon,
+  ClipboardList,
 } from "lucide-react";
 import {
   defaultSettings,
   type AppItem,
+  type CommandTool,
+  type LauncherMode,
   type Settings,
 } from "./types";
 import {
   chooseApps,
   chooseFolder,
+  clipboardText,
   desktopApps,
   existingAppPaths,
   exportBackup,
@@ -59,6 +64,8 @@ import {
   suspendGlobalHotkeys,
 } from "./tauri";
 import { pinyin } from "pinyin-pro";
+import CommandCenter from "./CommandCenter";
+import { parseCompatibleBackup } from "./tinycast-compat";
 
 const load = <T,>(key: string, fallback: T): T => {
   try {
@@ -156,7 +163,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.8";
+const APP_VERSION = "0.9.9";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -174,7 +181,13 @@ export default function App() {
   });
   const [apps, setApps] = useState<AppItem[]>(loadApps);
   const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<"apps" | "ai">("apps");
+  const [mode, setMode] = useState<LauncherMode>("apps");
+  const [clipboardEntries, setClipboardEntries] = useState<string[]>(() =>
+    load<string[]>("qimiao-clipboard-history", []),
+  );
+  const [commandTools, setCommandTools] = useState<CommandTool[]>(() =>
+    load<CommandTool[]>("qimiao-command-tools", []),
+  );
   const [page, setPage] = useState<"home" | "settings">("home");
   const [appPage, setAppPage] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -312,6 +325,31 @@ export default function App() {
     );
   }, [settings.hotkey]);
   useEffect(() => persistApps(apps), [apps]);
+  useEffect(() => save("qimiao-command-tools", commandTools), [commandTools]);
+  useEffect(() => {
+    if (!settings.clipboardHistoryEnabled) return;
+    let active = true;
+    const capture = async () => {
+      try {
+        const text = await clipboardText();
+        if (!active || !text.trim() || text.length > 200_000) return;
+        setClipboardEntries((current) => {
+          if (current[0] === text) return current;
+          const next = [text, ...current.filter((item) => item !== text)].slice(0, 100);
+          save("qimiao-clipboard-history", next);
+          return next;
+        });
+      } catch {
+        // Clipboard access can temporarily fail while another app owns it.
+      }
+    };
+    void capture();
+    const timer = window.setInterval(capture, 1400);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [settings.clipboardHistoryEnabled]);
   useEffect(() => {
     if (
       !isWindows &&
@@ -339,6 +377,26 @@ export default function App() {
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, []);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (
+        page !== "home" ||
+        event.key !== "Tab" ||
+        event.metaKey || event.ctrlKey || event.altKey ||
+        event.isComposing || composingRef.current
+      ) return;
+      event.preventDefault();
+      setMode((current) => {
+        const modes: LauncherMode[] = ["apps", "commands", "clipboard"];
+        const index = modes.indexOf(current);
+        return modes[(index + (event.shiftKey ? modes.length - 1 : 1)) % modes.length];
+      });
+      setQuery("");
+      requestAnimationFrame(() => searchRef.current?.focus());
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [page]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -572,6 +630,8 @@ export default function App() {
       exportedAt: new Date().toISOString(),
       settings: { ...settings, apiKey: "" },
       apps,
+      commandTools,
+      clipboardEntries,
     };
     try {
       const path = await exportBackup(JSON.stringify(backup, null, 2));
@@ -593,15 +653,7 @@ export default function App() {
     try {
       const raw = await importBackup();
       if (!raw) return;
-      const backup = JSON.parse(raw) as {
-        format?: string;
-        settings?: Partial<Settings>;
-        apps?: AppItem[];
-      };
-      if (backup.format !== "qimiao-backup" || !Array.isArray(backup.apps))
-        throw new Error(
-          settings.language === "en" ? "Invalid qimiao backup" : "不是有效的启喵备份",
-        );
+      const backup = parseCompatibleBackup(raw);
       const restoredSettings: Settings = {
         ...defaultSettings,
         ...backup.settings,
@@ -612,15 +664,29 @@ export default function App() {
           ? { ...restoredSettings, autoScanApps: false, scanOnLaunch: false }
           : restoredSettings,
       );
-      setApps(
+      if (backup.apps) setApps(
         backup.apps.filter(
           (app) => app && typeof app.name === "string" && typeof app.path === "string",
         ),
       );
+      if (backup.commandTools) {
+        const existing = new Set(commandTools.map((tool) => `${tool.type}:${tool.title.toLocaleLowerCase()}:${tool.content}`));
+        setCommandTools([
+          ...commandTools,
+          ...backup.commandTools.filter((tool) => !existing.has(`${tool.type}:${tool.title.toLocaleLowerCase()}:${tool.content}`)),
+        ]);
+      }
+      if (backup.clipboardEntries?.length) {
+        const mergedClipboard = [...backup.clipboardEntries, ...clipboardEntries]
+          .filter((value, index, all) => value.trim() && all.indexOf(value) === index)
+          .slice(0, 100);
+        setClipboardEntries(mergedClipboard);
+        save("qimiao-clipboard-history", mergedClipboard);
+      }
       setCategory("全部");
       setAppPage(0);
       showToast(
-        settings.language === "en" ? "Backup restored" : "备份已恢复",
+        settings.language === "en" ? `${backup.sourceLabel} imported` : `已导入 ${backup.sourceLabel}`,
       );
     } catch (error) {
       showToast(
@@ -742,7 +808,7 @@ export default function App() {
                 onRefresh={refresh}
                 busy={busy}
               />
-              <div className="category-nav">
+              {mode === "apps" && <div className="category-nav">
                 <button
                   className="category-arrow"
                   aria-label={settings.language === "en" ? "Previous categories" : "向前查看分类"}
@@ -794,8 +860,20 @@ export default function App() {
                   <Plus />
                   {settings.language === "en" ? "Categories" : "管理分类"}
                 </button>
-              </div>
-              {mode === "ai" && query ? (
+              </div>}
+              {mode === "commands" || mode === "clipboard" ? (
+                <CommandCenter
+                  mode={mode}
+                  query={query}
+                  language={settings.language}
+                  fileSearchDirs={settings.fileSearchDirs}
+                  clipboardEntries={clipboardEntries}
+                  tools={commandTools}
+                  setTools={setCommandTools}
+                  setMode={setMode}
+                  showToast={showToast}
+                />
+              ) : mode === "ai" && query ? (
                 <AiPanel query={query} settings={settings} />
               ) : (
                 <>
@@ -1073,8 +1151,8 @@ function Header({
   language: Settings["language"];
   query: string;
   setQuery: (s: string) => void;
-  mode: "apps" | "ai";
-  setMode: (m: "apps" | "ai") => void;
+  mode: LauncherMode;
+  setMode: (m: LauncherMode) => void;
   onCompositionStart: () => void;
   onCompositionEnd: () => void;
   inputRef: React.RefObject<HTMLInputElement>;
@@ -1086,12 +1164,12 @@ function Header({
 }) {
   const en = language === "en";
   const placeholder = mode === "apps"
-      ? en
-        ? "Search apps"
-        : "搜索应用"
-      : en
-        ? "Ask qimiao AI…"
-        : "问启喵 AI…";
+    ? en ? "Search apps" : "搜索应用"
+    : mode === "commands"
+      ? en ? "Search commands, calculate, file:…" : "搜索命令、计算，或输入 file:…"
+      : mode === "clipboard"
+        ? en ? "Search clipboard history" : "搜索剪贴板历史"
+        : en ? "Ask qimiao AI…" : "问启喵 AI…";
   return (
     <header className="launchpad-header">
       <div className="search-wrap">
@@ -1119,6 +1197,22 @@ function Header({
           >
             <AppWindow />
             {en ? "Apps" : "应用"}
+          </button>
+          <button
+            className={mode === "commands" ? "active" : ""}
+            onClick={() => setMode("commands")}
+            title={en ? "Commands" : "命令"}
+          >
+            <CommandIcon />
+            {en ? "Commands" : "命令"}
+          </button>
+          <button
+            className={mode === "clipboard" ? "active" : ""}
+            onClick={() => setMode("clipboard")}
+            title={en ? "Clipboard" : "剪贴板"}
+          >
+            <ClipboardList />
+            {en ? "Clipboard" : "剪贴板"}
           </button>
           <button
             className={mode === "ai" ? "active" : ""}
@@ -1550,6 +1644,11 @@ function SettingsPage({
     if (dir && !settings.scanDirs.includes(dir))
       update({ scanDirs: [...settings.scanDirs, dir] });
   }
+  async function addFileSearchDir() {
+    const dir = await chooseFolder();
+    if (dir && !settings.fileSearchDirs.includes(dir))
+      update({ fileSearchDirs: [...settings.fileSearchDirs, dir] });
+  }
   return (
     <div className="settings-page">
       <PageHead
@@ -1760,6 +1859,50 @@ function SettingsPage({
             value={settings.hotkey}
             onChange={(hotkey) => update({ hotkey })}
           />
+        </div>
+      </SettingSection>
+      <SettingSection
+        icon={<CommandIcon />}
+        title={en ? "Command Center" : "命令中心"}
+      >
+        <ToggleRow
+          title={en ? "Clipboard history" : "剪贴板历史"}
+          desc={
+            en
+              ? "Keep up to 100 recent text entries on this device"
+              : "在本机保留最近 100 条文本记录"
+          }
+          checked={settings.clipboardHistoryEnabled}
+          onChange={(clipboardHistoryEnabled) => update({ clipboardHistoryEnabled })}
+        />
+        <div className="setting-row column">
+          <div>
+            <strong>{en ? "File search locations" : "文件搜索位置"}</strong>
+            <span>
+              {en
+                ? "By default qimiao searches Desktop, Documents and Downloads"
+                : "默认搜索桌面、文稿和下载；添加后仅搜索指定目录"}
+            </span>
+          </div>
+          <div className="dir-list">
+            {settings.fileSearchDirs.map((directory) => (
+              <div key={directory}>
+                <Folder />
+                <span>{directory}</span>
+                <button
+                  onClick={() => update({
+                    fileSearchDirs: settings.fileSearchDirs.filter((item) => item !== directory),
+                  })}
+                >
+                  <X />
+                </button>
+              </div>
+            ))}
+            <button className="add-dir" onClick={addFileSearchDir}>
+              <Plus />
+              {en ? "Add search folder" : "添加搜索目录"}
+            </button>
+          </div>
         </div>
       </SettingSection>
       <SettingSection icon={<Brain />} title={en ? "AI service" : "AI 服务"}>
@@ -2694,6 +2837,11 @@ function AboutDialog({
           <ChevronRight />
           {en ? "View on GitHub" : "访问 GitHub"}
         </button>
+        <p className="about-license">
+          {en
+            ? "Licensed under GNU AGPL v3 or later. Source code and modification notices are available on GitHub. No warranty."
+            : "本软件按 GNU AGPL 第 3 版或更高版本授权。源代码与修改声明可在 GitHub 获取，不提供任何担保。"}
+        </p>
       </section>
     </>
   );
