@@ -1528,20 +1528,89 @@ fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String
     }
 }
 
-#[tauri::command]
-fn run_custom_command(program: String, args: Vec<String>) -> Result<(), String> {
-    if program.trim().is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
-        return Err("自定义命令无效".into());
+fn expanded_working_directory(value: Option<String>) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = if let Some(rest) = value.strip_prefix("~/") {
+        let home = std::env::var_os(if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" })
+            .ok_or_else(|| "无法读取用户目录".to_string())?;
+        PathBuf::from(home).join(rest)
+    } else {
+        PathBuf::from(value)
+    };
+    if !path.is_dir() {
+        return Err(format!("工作目录不存在：{}", path.display()));
     }
-    #[cfg(target_os = "windows")]
-    let mut command = hidden_windows_command(&program);
-    #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new(&program);
-    command.args(args).spawn().map(|_| ()).map_err(|error| error.to_string())
+    Ok(Some(path))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn run_custom_command(
+    program: String,
+    args: Vec<String>,
+    working_directory: Option<String>,
+    capture_output: bool,
+) -> Result<String, String> {
+    if program.trim().is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
+        return Err("自定义命令无效".into());
+    }
+    let working_directory = expanded_working_directory(working_directory)?;
+    let direct_program = Path::new(program.trim()).is_file();
+    #[cfg(target_os = "windows")]
+    let mut command = if direct_program {
+        hidden_windows_command(program.trim())
+    } else {
+        let joined = args.iter().map(|arg| powershell_quote(arg)).collect::<Vec<_>>().join(" ");
+        let script = if joined.is_empty() { program.clone() } else { format!("{} {}", program, joined) };
+        let mut value = hidden_windows_command("powershell.exe");
+        value.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        value
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = if direct_program {
+        Command::new(program.trim())
+    } else {
+        let joined = args.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
+        let script = if joined.is_empty() { program.clone() } else { format!("{} {}", program, joined) };
+        let mut value = Command::new(if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" });
+        value.args(["-lc", &script]);
+        value
+    };
+    if direct_program {
+        command.args(&args);
+    }
+    if let Some(directory) = working_directory {
+        command.current_dir(directory);
+    }
+    if capture_output {
+        let output = command.output().map_err(|error| error.to_string())?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if output.status.success() {
+            Ok(if stdout.is_empty() { stderr } else { stdout })
+        } else {
+            Err(if stderr.is_empty() { format!("命令退出状态：{}", output.status) } else { stderr })
+        }
+    } else {
+        command.spawn().map(|_| String::new()).map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn open_external_url(url: String, open_with_bundle_id: Option<String>) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = &open_with_bundle_id;
     let Some((scheme, _)) = url.split_once(':') else { return Err("链接缺少协议".into()) };
     if scheme.is_empty()
         || !scheme.as_bytes().first().map(|value| value.is_ascii_alphabetic()).unwrap_or(false)
@@ -1552,6 +1621,14 @@ fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut c = Command::new("open");
+        if let Some(bundle_id) = open_with_bundle_id
+            .filter(|value| !value.is_empty())
+            .filter(|value| value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+            }))
+        {
+            c.args(["-b", &bundle_id]);
+        }
         c.arg(&url);
         c
     };
@@ -2630,6 +2707,31 @@ mod extension_storage_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn runs_captured_custom_shell_command_in_working_directory() {
+        let root = std::env::temp_dir().join(format!("qimiao-command-fixture-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let output = run_custom_command(
+            "printf '%s' \"$PWD\"".into(),
+            Vec::new(),
+            Some(root.to_string_lossy().into_owned()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(Path::new(&output).canonicalize().unwrap(), root.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn quotes_custom_command_arguments() {
+        let output = run_custom_command(
+            "printf '%s'".into(),
+            vec!["hello world's".into()],
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(output, "hello world's");
+    }
     #[test]
     fn imports_tinycast_archive_models() {
         let stamp = std::time::SystemTime::now()

@@ -86,7 +86,9 @@ function mapCustomCommand(value: unknown, source: "tinycast" | "raycast"): Comma
   return {
     id: textValue(item.id) ?? freshId("command"), type: "custom", title, content,
     enabled: boolValue(item.isEnabled), arguments: mapArguments(item.arguments),
-    requiresConfirmation: boolValue(item.requiresConfirmation, false),
+    // Imported shell commands must never execute silently unless the source
+    // explicitly opted out of confirmation.
+    requiresConfirmation: boolValue(item.requiresConfirmation, true),
     showsConfirmation: boolValue(item.showsConfirmation, false),
     showsOutput: boolValue(item.showsOutput, false),
     workingDirectory: textValue(item.workingDirectory),

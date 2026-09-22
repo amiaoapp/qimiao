@@ -33,6 +33,7 @@ import {
   DatabaseBackup,
   Command as CommandIcon,
   ClipboardList,
+  GripVertical,
 } from "lucide-react";
 import {
   defaultSettings,
@@ -163,7 +164,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.9";
+const APP_VERSION = "0.9.10";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -765,8 +766,6 @@ export default function App() {
   }
   return (
     <main className="stage">
-      <div className="ambient a1" />
-      <div className="ambient a2" />
       <section className="launcher-shell">
         <div className="content">
           {availableUpdate && (
@@ -873,7 +872,7 @@ export default function App() {
                   setMode={setMode}
                   showToast={showToast}
                 />
-              ) : mode === "ai" && query ? (
+              ) : mode === "ai" ? (
                 <AiPanel query={query} settings={settings} />
               ) : (
                 <>
@@ -911,6 +910,11 @@ export default function App() {
                       </span>
                       <div className="library-controls">
                         <select
+                          aria-label={
+                            settings.language === "en"
+                              ? "Application sort order"
+                              : "应用排序方式"
+                          }
                           value={settings.sortBy}
                           onChange={(e) =>
                             updateSettings({
@@ -918,12 +922,24 @@ export default function App() {
                             })
                           }
                         >
-                          <option value="smart">智能排序</option>
-                          <option value="nameAsc">名称 A–Z</option>
-                          <option value="nameDesc">名称 Z–A</option>
-                          <option value="recentUsed">最近使用</option>
-                          <option value="recentInstalled">最新安装</option>
-                          <option value="mostUsed">最常使用</option>
+                          <option value="smart">
+                            {settings.language === "en" ? "Smart" : "智能排序"}
+                          </option>
+                          <option value="nameAsc">
+                            {settings.language === "en" ? "Name A–Z" : "名称 A–Z"}
+                          </option>
+                          <option value="nameDesc">
+                            {settings.language === "en" ? "Name Z–A" : "名称 Z–A"}
+                          </option>
+                          <option value="recentUsed">
+                            {settings.language === "en" ? "Recently used" : "最近使用"}
+                          </option>
+                          <option value="recentInstalled">
+                            {settings.language === "en" ? "Recently installed" : "最新安装"}
+                          </option>
+                          <option value="mostUsed">
+                            {settings.language === "en" ? "Most used" : "最常使用"}
+                          </option>
                         </select>
                         <div className="view-switch">
                           <button
@@ -1170,6 +1186,11 @@ function Header({
       : mode === "clipboard"
         ? en ? "Search clipboard history" : "搜索剪贴板历史"
         : en ? "Ask qimiao AI…" : "问启喵 AI…";
+  const chooseMode = (next: LauncherMode) => {
+    setMode(next);
+    setQuery("");
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
   return (
     <header className="launchpad-header">
       <div className="search-wrap">
@@ -1193,14 +1214,14 @@ function Header({
         <div className="mode-switch">
           <button
             className={mode === "apps" ? "active" : ""}
-            onClick={() => setMode("apps")}
+            onClick={() => chooseMode("apps")}
           >
             <AppWindow />
             {en ? "Apps" : "应用"}
           </button>
           <button
             className={mode === "commands" ? "active" : ""}
-            onClick={() => setMode("commands")}
+            onClick={() => chooseMode("commands")}
             title={en ? "Commands" : "命令"}
           >
             <CommandIcon />
@@ -1208,7 +1229,7 @@ function Header({
           </button>
           <button
             className={mode === "clipboard" ? "active" : ""}
-            onClick={() => setMode("clipboard")}
+            onClick={() => chooseMode("clipboard")}
             title={en ? "Clipboard" : "剪贴板"}
           >
             <ClipboardList />
@@ -1216,7 +1237,7 @@ function Header({
           </button>
           <button
             className={mode === "ai" ? "active" : ""}
-            onClick={() => setMode("ai")}
+            onClick={() => chooseMode("ai")}
           >
             <Brain />
             AI
@@ -1476,6 +1497,19 @@ function CategoryManager({
       name,
     })),
   );
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const moveRow = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    setRows((current) => {
+      const from = current.findIndex((row) => row.id === sourceId);
+      const to = current.findIndex((row) => row.id === targetId);
+      if (from < 0 || to < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
   const saveRows = () => {
     const valid = rows
       .map((row) => ({ ...row, name: row.name.trim() }))
@@ -1499,7 +1533,7 @@ function CategoryManager({
         <header>
           <div>
             <h2>管理分类</h2>
-            <p>添加、重命名或删除应用分类</p>
+            <p>拖动排序，也可以添加、重命名或删除应用分类</p>
           </div>
           <button onClick={onClose}>
             <X />
@@ -1507,8 +1541,35 @@ function CategoryManager({
         </header>
         <div className="category-editor-list">
           {rows.map((row) => (
-            <div key={row.id}>
-              <Folder />
+            <div
+              key={row.id}
+              className={draggedId === row.id ? "dragging" : ""}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (draggedId) moveRow(draggedId, row.id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDraggedId(null);
+              }}
+            >
+              <span
+                className="category-drag-handle"
+                draggable
+                role="button"
+                tabIndex={0}
+                title="拖动调整顺序"
+                aria-label={`拖动 ${row.name || "新分类"} 调整顺序`}
+                onDragStart={(event) => {
+                  setDraggedId(row.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", row.id);
+                }}
+                onDragEnd={() => setDraggedId(null)}
+              >
+                <GripVertical />
+              </span>
+              <Folder className="category-folder" />
               <input
                 autoFocus={row.id.startsWith("new-")}
                 value={row.name}
@@ -1562,6 +1623,7 @@ function AiPanel({ query, settings }: { query: string; settings: Settings }) {
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
   async function ask() {
+    if (!query.trim()) return;
     if (!settings.apiKey) {
       setAnswer("请先在设置 → AI 服务中配置 API Key。你的密钥只保存在本机。");
       return;
@@ -1592,6 +1654,22 @@ function AiPanel({ query, settings }: { query: string; settings: Settings }) {
       setLoading(false);
     }
   }
+  useEffect(() => {
+    const submit = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Enter" ||
+        event.shiftKey ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        !query.trim() ||
+        loading
+      ) return;
+      event.preventDefault();
+      void ask();
+    };
+    window.addEventListener("keydown", submit, true);
+    return () => window.removeEventListener("keydown", submit, true);
+  });
   return (
     <section className="ai-panel">
       <div className="ai-orb">
@@ -1599,15 +1677,17 @@ function AiPanel({ query, settings }: { query: string; settings: Settings }) {
       </div>
       <div>
         <span>启喵 AI · {settings.aiModel}</span>
-        <h2>{query}</h2>
+        <h2>{query || (settings.language === "en" ? "Ask anything" : "输入问题后按回车")}</h2>
         {answer ? (
           <p>{answer}</p>
         ) : (
           <p className="muted">
-            按下按钮，通过你配置的 AI 服务查询。API Key 仅保存在当前设备。
+            {settings.language === "en"
+              ? "Type in the search box and press Enter. Your API key stays on this device."
+              : "在搜索框输入内容后按回车，通过已配置的 AI 服务查询。API Key 仅保存在当前设备。"}
           </p>
         )}
-        <button className="primary" onClick={ask} disabled={loading}>
+        <button className="primary" onClick={ask} disabled={loading || !query.trim()}>
           {loading ? <RefreshCw className="spin" /> : <Sparkles />}
           {loading ? "思考中…" : "开始查询"}
         </button>

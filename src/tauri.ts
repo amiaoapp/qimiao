@@ -103,10 +103,10 @@ export async function openMacosPermission(kind: "input" | "accessibility") {
     await invoke("open_macos_permission", { kind });
   }
 }
-export async function openExternalUrl(url: string) {
+export async function openExternalUrl(url: string, openWithBundleId?: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("open_external_url", { url });
+    await invoke("open_external_url", { url, openWithBundleId });
   } else window.open(url, "_blank", "noopener,noreferrer");
 }
 export async function setTrayVisible(visible: boolean) {
@@ -195,11 +195,22 @@ export async function runWindowAction(action: string) {
     await invoke("run_window_action", { action });
   }
 }
-export async function runCustomCommand(program: string, args: string[]) {
+export async function runCustomCommand(
+  program: string,
+  args: string[],
+  workingDirectory?: string,
+  captureOutput = false,
+): Promise<string> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("run_custom_command", { program, args });
+    return invoke("run_custom_command", {
+      program,
+      args,
+      workingDirectory,
+      captureOutput,
+    });
   }
+  return "";
 }
 const names = [
   "Arc",

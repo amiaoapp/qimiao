@@ -6,9 +6,9 @@ This document tracks functional and data compatibility against TinyCast revision
 | --- | --- | --- |
 | Launcher and app search | Compatible | qimiao keeps its Launchpad grid, fuzzy/Pinyin search, categories, favorites and keyboard navigation. |
 | Global launcher shortcut | Compatible | Configurable global shortcut with conflict handling. |
-| Quicklinks | Core compatible | Imports TinyCast and Raycast JSON, preserves enablement/pinning/open-with metadata, understands paths, web URLs and deeplinks, and expands common dynamic placeholders. |
-| Snippets | Core compatible | Imports TinyCast Markdown frontmatter and Raycast JSON; supports keywords, nested references, arguments, clipboard/date/UUID tokens and common modifier pipelines. |
-| Custom commands | Core compatible | Imports TinyCast command records, positional arguments, confirmation, working-directory and output metadata; execution remains shell-free by default. |
+| Quicklinks | Core compatible | Imports TinyCast and Raycast JSON, preserves enablement/pinning/open-with metadata, opens links with the requested macOS bundle when available, understands paths, web URLs and deeplinks, and expands common dynamic placeholders. |
+| Snippets | Core compatible | Imports TinyCast Markdown frontmatter and Raycast JSON; supports keywords, nested references, arguments, clipboard/date/UUID tokens, confirmation and common modifier pipelines. |
+| Custom commands | Core compatible | Imports TinyCast command records and runs them locally with placeholder/argument expansion, confirmation, working-directory handling and optional captured output. Imported commands require confirmation unless the source explicitly disables it. |
 | Notes | Data compatible | Imports TinyCast Markdown notes as searchable qimiao command items. A dedicated Markdown editor is not yet present. |
 | Clipboard | Text compatible | Captures and searches local text history and imports text entries from `.tinycast`; image/file history and pinning are pending. |
 | Calculator | Partial | Safe arithmetic and common unit conversion work; live currency/crypto rates and history are pending. |

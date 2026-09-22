@@ -26,7 +26,7 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 - OpenAI Compatible AI 查询与翻译
 - 命令中心：Tab 模式切换、剪贴板历史、文件搜索、内联计算与单位换算、Emoji、Apple 快捷指令
 - 原生系统操作与窗口布局命令；文件和剪贴板内容只在本机处理
-- 本地 Quicklinks、Snippets、笔记与无 shell 的自定义命令；随配置备份迁移
+- 本地 Quicklinks、Snippets、笔记与自定义命令；支持参数占位符、运行确认、工作目录、输出捕获及配置备份迁移
 - macOS 可直接导入 `.tinycast`；JSON 形式的 TinyCast/Raycast 数据可跨平台导入
 - 词典入口、常用系统操作及九种窗口布局操作；破坏性操作需要确认
 - 中英文界面
@@ -41,7 +41,7 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 - OpenAI-compatible AI search and translation
 - Command Center with Tab mode switching, clipboard history, file search, inline calculations and unit conversions, emoji, and Apple Shortcuts
 - Native system/window actions; file and clipboard data stays on the device
-- Local Quicklinks, snippets, notes, and shell-free custom commands, included in configuration backups
+- Local Quicklinks, snippets, notes, and custom commands with placeholders, confirmation, working directories, captured output, and backup migration
 - Direct `.tinycast` import on macOS, plus cross-platform TinyCast/Raycast JSON migration
 - Dictionary entry point, common system actions, and nine window layouts with confirmation for destructive actions
 - Chinese and English interface

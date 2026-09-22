@@ -135,7 +135,10 @@ export default function CommandCenter(props: Props) {
       return null;
     })();
     const toolResults: CommandResult[] = tools
-      .filter((tool) => tool.enabled !== false && tool.showsInRootSearch !== false)
+      // The command center is the full library. `showsInRootSearch` only
+      // controls mixed launcher search in TinyCast and must not hide an
+      // imported command from its dedicated library.
+      .filter((tool) => tool.enabled !== false)
       .filter((tool) => toolMatchesQuery(tool, trimmed))
       .map((tool) => ({
         id: `tool:${tool.id}`, title: tool.title, subtitle: tool.content,
@@ -231,7 +234,7 @@ export default function CommandCenter(props: Props) {
         }
         const destination = normalizeCompatibleDestination(expanded.value);
         if (/^(~\/|\/|file:\/\/|[a-z]:[\\/])/i.test(destination)) await openPath(destination.replace(/^file:\/\//, ""));
-        else await openExternalUrl(destination);
+        else await openExternalUrl(destination, tool?.openWithBundleID);
       }
       else if (result.action === "tool-snippet" && result.path) {
         const tool = tools.find((candidate) => `tool:${candidate.id}` === result.id);
@@ -243,15 +246,47 @@ export default function CommandCenter(props: Props) {
             ? `Type a value after “${tool?.keyword ?? tool?.title}”`
             : `请在“${tool?.keyword ?? tool?.title}”后输入参数`);
         }
+        if (tool?.showsConfirmation
+          && !window.confirm(en ? `Copy “${tool.title}”?` : `复制“${tool.title}”？`)) return;
         await setClipboardText(expanded.value);
       }
       else if (result.action === "tool-note" && result.path) await setClipboardText(result.path);
       else if (result.action === "tool-custom" && result.path) {
         const tool = tools.find((candidate) => `tool:${candidate.id}` === result.id);
-        if (tool?.requiresConfirmation && !window.confirm(en ? `Run “${tool.title}”?` : `运行“${tool.title}”？`)) return;
         const supplied = toolArgumentInput(query, tool);
-        const args = supplied ? [supplied] : JSON.parse(result.value ?? "[]") as string[];
-        await runCustomCommand(result.path, args);
+        const expansionContext = {
+          argument: supplied,
+          clipboard: clipboardEntries[0] ?? "",
+          snippets: tools,
+        };
+        const expandedCommand = await expandCompatibleTemplate(result.path, expansionContext);
+        if (expandedCommand.missingArguments.length) {
+          return showToast(en
+            ? `Type a value after “${tool?.keyword ?? tool?.alias ?? tool?.title}”`
+            : `请在“${tool?.keyword ?? tool?.alias ?? tool?.title}”后输入参数`);
+        }
+        const configuredArgs = tool?.args ?? JSON.parse(result.value ?? "[]") as string[];
+        const expandedArgs = await Promise.all(configuredArgs.map(async (arg) =>
+          (await expandCompatibleTemplate(arg, expansionContext)).value));
+        const commandContainsArgument = /\{\s*(?:argument|query)\b/i.test(result.path);
+        const args = supplied && !commandContainsArgument && !expandedArgs.length
+          ? [supplied]
+          : expandedArgs;
+        const workingDirectory = tool?.workingDirectory
+          ? (await expandCompatibleTemplate(tool.workingDirectory, expansionContext)).value
+          : undefined;
+        if ((tool?.requiresConfirmation || tool?.showsConfirmation)
+          && !window.confirm(en ? `Run “${tool.title}”?` : `运行“${tool.title}”？`)) return;
+        const output = await runCustomCommand(
+          expandedCommand.value,
+          args,
+          workingDirectory,
+          tool?.showsOutput === true,
+        );
+        if (output.trim()) {
+          await setClipboardText(output.trim());
+          return showToast(en ? "Output copied to clipboard" : "命令输出已复制到剪贴板");
+        }
       }
       else if (result.kind === "file" && result.path) await openPath(result.path);
       else if (result.kind === "shortcut" && result.value) await runAppleShortcut(result.value);

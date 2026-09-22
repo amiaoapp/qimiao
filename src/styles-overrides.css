@@ -4,23 +4,23 @@ html,body,#root{min-width:700px;min-height:476px;background:transparent!importan
 :root[data-platform=macos],:root[data-platform=macos] body,:root[data-platform=macos] #root,:root[data-platform=macos] .stage,:root[data-platform=macos] .launcher-shell{border-radius:26px!important;clip-path:inset(0 round 26px)!important;overflow:hidden!important}
 
 /* Frosted glass stays bright and translucent. Solid owns the old opaque look. */
-:root[data-material=glass] .launcher-shell{background:linear-gradient(135deg,rgba(248,250,255,.66),rgba(231,239,252,.52) 52%,rgba(246,234,255,.57))!important;backdrop-filter:blur(32px) saturate(155%) contrast(102%)!important;-webkit-backdrop-filter:blur(32px) saturate(155%) contrast(102%)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.72),inset 0 1px 0 rgba(255,255,255,.92),0 24px 68px rgba(35,47,75,.2)!important}
-:root[data-material=glass] .launcher-shell:after{content:"";position:absolute;inset:1px;z-index:0;pointer-events:none;background:radial-gradient(ellipse at 10% -8%,rgba(255,255,255,.62),transparent 30%),radial-gradient(ellipse at 92% 0%,rgba(192,174,255,.16),transparent 32%),linear-gradient(115deg,rgba(255,255,255,.12),transparent 32% 68%,rgba(173,216,255,.09))}
+:root[data-material=glass] .launcher-shell{background:rgba(241,245,251,.62)!important;backdrop-filter:blur(32px) saturate(135%) contrast(102%)!important;-webkit-backdrop-filter:blur(32px) saturate(135%) contrast(102%)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.72),inset 0 1px 0 rgba(255,255,255,.92),0 24px 68px rgba(35,47,75,.2)!important}
+:root[data-material=glass] .launcher-shell:after{content:"";position:absolute;inset:1px;z-index:0;pointer-events:none;background:linear-gradient(135deg,rgba(255,255,255,.22),rgba(255,255,255,.03) 46%,rgba(255,255,255,.1))}
 :root[data-material=glass] .launcher-shell>.content{position:relative;z-index:1}
 :root[data-material=solid] .launcher-shell{background:rgba(245,247,251,.985)!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;box-shadow:inset 0 0 0 1px rgba(105,117,138,.16),0 24px 66px rgba(35,47,75,.18)!important}
 
 :root[data-theme=dark]{--panel:rgba(47,54,70,.88);--card:rgba(255,255,255,.105);--line:rgba(255,255,255,.14);--text:#f6f8fc;--muted:#b6c0d0;background:transparent!important}
-:root[data-theme=dark][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(55,64,84,.62),rgba(45,48,66,.55) 52%,rgba(61,48,75,.56))!important;backdrop-filter:blur(34px) saturate(150%) contrast(104%)!important;-webkit-backdrop-filter:blur(34px) saturate(150%) contrast(104%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}
-:root[data-theme=dark][data-material=glass] .launcher-shell:after{background:radial-gradient(ellipse at 8% -5%,rgba(142,190,255,.23),transparent 32%),radial-gradient(ellipse at 94% 0%,rgba(213,151,255,.2),transparent 34%),linear-gradient(112deg,rgba(255,255,255,.07),transparent 30% 68%,rgba(218,174,255,.07))}
+:root[data-theme=dark][data-material=glass] .launcher-shell{background:rgba(38,44,58,.72)!important;backdrop-filter:blur(34px) saturate(125%) contrast(106%)!important;-webkit-backdrop-filter:blur(34px) saturate(125%) contrast(106%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}
+:root[data-theme=dark][data-material=glass] .launcher-shell:after{background:linear-gradient(135deg,rgba(255,255,255,.09),rgba(255,255,255,.015) 48%,rgba(255,255,255,.04))}
 
 /* Keep liquid glass neutral and cheap to composite. Large colored radial
    overlays amplified macOS' pointer-reactive native highlight and caused a
    purple hotspot plus visible repaint streaks in the top-right corner. */
 :root[data-material=liquid] .launcher-shell:before{background:transparent!important}
-:root[data-material=liquid] .launcher-shell:after{background:linear-gradient(135deg,rgba(255,255,255,.24),transparent 36%),linear-gradient(315deg,rgba(126,210,255,.045),transparent 34%)!important;mix-blend-mode:normal!important}
-:root[data-theme=dark][data-material=liquid] .launcher-shell:after{background:linear-gradient(135deg,rgba(255,255,255,.105),transparent 38%),linear-gradient(315deg,rgba(126,210,255,.035),transparent 32%)!important}
+:root[data-material=liquid] .launcher-shell:after{background:rgba(255,255,255,.035)!important;mix-blend-mode:normal!important}
+:root[data-theme=dark][data-material=liquid] .launcher-shell:after{background:rgba(255,255,255,.025)!important}
 :root[data-theme=dark][data-material=solid] .launcher-shell{background:rgba(35,41,54,.985)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.13),0 27px 72px rgba(0,0,0,.32)!important}
-@media(prefers-color-scheme:dark){:root[data-theme=system]{--panel:rgba(47,54,70,.88);--card:rgba(255,255,255,.105);--line:rgba(255,255,255,.14);--text:#f6f8fc;--muted:#b6c0d0;background:transparent!important}:root[data-theme=system][data-material=glass] .launcher-shell{background:linear-gradient(138deg,rgba(55,64,84,.62),rgba(45,48,66,.55) 52%,rgba(61,48,75,.56))!important;backdrop-filter:blur(34px) saturate(150%)!important;-webkit-backdrop-filter:blur(34px) saturate(150%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}:root[data-theme=system][data-material=solid] .launcher-shell{background:rgba(35,41,54,.985)!important}}
+@media(prefers-color-scheme:dark){:root[data-theme=system]{--panel:rgba(47,54,70,.88);--card:rgba(255,255,255,.105);--line:rgba(255,255,255,.14);--text:#f6f8fc;--muted:#b6c0d0;background:transparent!important}:root[data-theme=system][data-material=glass] .launcher-shell{background:rgba(38,44,58,.72)!important;backdrop-filter:blur(34px) saturate(125%)!important;-webkit-backdrop-filter:blur(34px) saturate(125%)!important;box-shadow:inset 0 0 0 1px rgba(225,235,255,.25),inset 0 1px 0 rgba(255,255,255,.36),0 27px 72px rgba(0,0,0,.32)!important}:root[data-theme=system][data-material=solid] .launcher-shell{background:rgba(35,41,54,.985)!important}}
 
 .setting-actions,.update-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px}.setting-actions button,.update-actions button{display:flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap}.setting-actions svg,.update-actions svg{width:13px}.danger-text{color:#e45a62!important}.update-dialog{width:330px}.update-actions{margin-top:14px}
 .extension-runtime>header{grid-template-columns:30px 34px minmax(0,1fr) 30px 30px}.ray-command-icon{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:rgba(103,113,242,.13);color:var(--accent);font-weight:750}.ray-preferences{flex:1;min-height:0;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:11px}.ray-preferences>header h2{margin:0 0 3px;font-size:16px}.ray-preferences>header p{margin:0;color:var(--muted);font-size:10px}.ray-preferences label{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px;align-items:center;font-size:11px}.ray-preferences input,.ray-preferences select{height:38px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);padding:0 10px;outline:0}.ray-preferences input[type=checkbox]{width:17px;height:17px;padding:0}.ray-preferences footer{display:flex;justify-content:flex-end;margin-top:auto;padding-top:12px}.ray-preferences footer button{height:35px;padding:0 14px;border-radius:9px}
@@ -65,3 +65,38 @@ html,body,#root{min-width:700px;min-height:476px;background:transparent!importan
 @media(prefers-color-scheme:dark){:root[data-theme=system] .command-center{background:rgba(17,22,33,.14)}}
 @media(max-width:1120px){.launchpad-header .mode-switch button{width:33px!important;padding:0!important;font-size:0!important;justify-content:center}.command-center{max-width:760px}}
 @media(max-width:860px){.launchpad-header .mode-switch{display:flex!important}}
+
+/* Unified glass controls and accessible dark-mode contrast. */
+.library-controls{height:36px!important;gap:8px!important}
+.library-controls select{height:36px!important;min-width:112px;appearance:none;-webkit-appearance:none;border:1px solid var(--line)!important;border-radius:13px!important;background-color:rgba(120,130,150,.1)!important;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237b8593' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m8 10 4-4 4 4'/%3E%3Cpath d='m16 14-4 4-4-4'/%3E%3C/svg%3E")!important;background-repeat:no-repeat!important;background-position:right 9px center!important;color:var(--text)!important;padding:0 30px 0 12px!important;font-size:10px!important;font-weight:600!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.35)!important}
+.library-controls .view-switch{height:36px!important;padding:3px!important;border-radius:13px!important;transform:none!important}
+.library-controls .view-switch button{width:31px!important;height:28px!important}
+.library-controls select:hover,.library-controls select:focus{background-color:var(--card)!important;border-color:rgba(101,115,242,.38)!important}
+.library-controls select option{background:#f4f6fa;color:#18202b}
+:root[data-theme=dark] .library-controls select,:root[data-theme=dark] .view-switch,:root[data-theme=dark] .launchpad-header .header-actions{color:#f6f8fc!important;background-color:rgba(13,18,29,.38)!important;border-color:rgba(255,255,255,.24)!important}
+:root[data-theme=dark] .library-controls select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23f6f8fc' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m8 10 4-4 4 4'/%3E%3Cpath d='m16 14-4 4-4-4'/%3E%3C/svg%3E")!important}
+:root[data-theme=dark] .library-controls select option{background:#252b39;color:#f6f8fc}
+:root[data-theme=dark] .launchpad-header .mode-switch button,:root[data-theme=dark] .launchpad-header .icon-btn,:root[data-theme=dark] .view-switch button{color:rgba(246,248,252,.82)!important}
+:root[data-theme=dark] .launchpad-header .mode-switch button.active,:root[data-theme=dark] .view-switch button.active{color:#fff!important;background:rgba(255,255,255,.18)!important}
+:root[data-theme=dark][data-material=liquid] .library-controls select,:root[data-theme=dark][data-material=liquid] .view-switch,:root[data-theme=dark][data-material=liquid] .launchpad-header .header-actions{background:rgba(8,12,21,.52)!important;border-color:rgba(255,255,255,.32)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.13)!important}
+:root[data-theme=dark][data-material=liquid] .launchpad-header .mode-switch button,:root[data-theme=dark][data-material=liquid] .launchpad-header .icon-btn,:root[data-theme=dark][data-material=liquid] .view-switch button{color:#edf2fa!important}
+@media(prefers-color-scheme:dark){
+  :root[data-theme=system] .library-controls select,:root[data-theme=system] .view-switch,:root[data-theme=system] .launchpad-header .header-actions{color:#f6f8fc!important;background-color:rgba(13,18,29,.38)!important;border-color:rgba(255,255,255,.24)!important}
+  :root[data-theme=system] .library-controls select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23f6f8fc' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m8 10 4-4 4 4'/%3E%3Cpath d='m16 14-4 4-4-4'/%3E%3C/svg%3E")!important}
+  :root[data-theme=system] .library-controls select option{background:#252b39;color:#f6f8fc}
+  :root[data-theme=system] .launchpad-header .mode-switch button,:root[data-theme=system] .launchpad-header .icon-btn,:root[data-theme=system] .view-switch button{color:rgba(246,248,252,.82)!important}
+  :root[data-theme=system] .launchpad-header .mode-switch button.active,:root[data-theme=system] .view-switch button.active{color:#fff!important;background:rgba(255,255,255,.18)!important}
+}
+
+@media(prefers-color-scheme:dark){
+  :root[data-theme=system][data-material=liquid] .library-controls select,:root[data-theme=system][data-material=liquid] .view-switch,:root[data-theme=system][data-material=liquid] .launchpad-header .header-actions{background:rgba(8,12,21,.52)!important;border-color:rgba(255,255,255,.32)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.13)!important}
+  :root[data-theme=system][data-material=liquid] .launchpad-header .mode-switch button,:root[data-theme=system][data-material=liquid] .launchpad-header .icon-btn,:root[data-theme=system][data-material=liquid] .view-switch button{color:#edf2fa!important}
+}
+
+/* Category rows are reordered from the handle; inputs remain fully editable. */
+.category-editor-list>div{grid-template-columns:22px 16px minmax(0,1fr) 26px!important;transition:opacity .12s ease,transform .12s ease}
+.category-editor-list>div.dragging{opacity:.52;transform:scale(.985)}
+.category-drag-handle{width:22px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--muted);cursor:grab;touch-action:none}
+.category-drag-handle:active{cursor:grabbing;background:var(--card);color:var(--text)}
+.category-drag-handle svg{width:14px!important}
+.category-folder{width:13px!important}
