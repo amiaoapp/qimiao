@@ -41,6 +41,7 @@ struct AppItem {
     path: String,
     icon: Option<String>,
     search_terms: String,
+    app_category: Option<String>,
     installed_at: Option<u64>,
     launch_count: u32,
     favorite: bool,
@@ -262,6 +263,7 @@ fn color_for(name: &str) -> String {
     )
 }
 
+#[cfg(not(target_os = "windows"))]
 fn normalize_rgba_icon(source: image::RgbaImage) -> image::RgbaImage {
     let (w, h) = source.dimensions();
     let mut bounds = (w, h, 0, 0);
@@ -297,6 +299,43 @@ fn normalize_rgba_icon(source: image::RgbaImage) -> image::RgbaImage {
         ((160 - nw) / 2) as i64,
         ((160 - nh) / 2) as i64,
     );
+    canvas
+}
+
+// Windows applications ship arbitrary silhouettes and transparent padding.
+// Give all of them one optical size inside the same rounded system tile.
+#[cfg(any(target_os = "windows", test))]
+fn normalize_windows_icon(source: image::RgbaImage) -> image::RgbaImage {
+    let (w, h) = source.dimensions();
+    let mut bounds = (w, h, 0, 0);
+    let mut found = false;
+    for (x, y, pixel) in source.enumerate_pixels() {
+        if pixel[3] >= 48 {
+            found = true;
+            bounds.0 = bounds.0.min(x);
+            bounds.1 = bounds.1.min(y);
+            bounds.2 = bounds.2.max(x);
+            bounds.3 = bounds.3.max(y);
+        }
+    }
+    let mut canvas = image::RgbaImage::new(160, 160);
+    // Signed-distance coverage keeps corners smooth at both 1x and 2x.
+    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
+        let dx = ((x as f32 + 0.5 - 80.0).abs() - 42.0).max(0.0);
+        let dy = ((y as f32 + 0.5 - 80.0).abs() - 42.0).max(0.0);
+        let alpha = ((30.0 - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
+        let tone = (251.0 - y as f32 / 160.0 * 13.0).round() as u8;
+        *pixel = image::Rgba([tone, tone, tone.saturating_add(2), alpha]);
+    }
+    if found {
+        let crop = image::imageops::crop_imm(&source, bounds.0, bounds.1,
+            bounds.2 - bounds.0 + 1, bounds.3 - bounds.1 + 1).to_image();
+        let scale = 112.0 / crop.width().max(crop.height()) as f32;
+        let nw = (crop.width() as f32 * scale).round().max(1.0) as u32;
+        let nh = (crop.height() as f32 * scale).round().max(1.0) as u32;
+        let resized = image::imageops::resize(&crop, nw, nh, image::imageops::FilterType::Lanczos3);
+        image::imageops::overlay(&mut canvas, &resized, ((160 - nw) / 2) as i64, ((160 - nh) / 2) as i64);
+    }
     canvas
 }
 
@@ -490,7 +529,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-shell-factory-v3:{}:{}:{}",
+                "windows-icon-system-tile-v4:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -508,7 +547,7 @@ fn app_icon(path: &Path, name: &str) -> String {
     }
     let _ = fs::create_dir_all(&cache);
     windows_shell_icon(path)
-        .map(normalize_rgba_icon)
+        .map(normalize_windows_icon)
         .and_then(|image| image.save(&output_path).ok().map(|_| image))
         .and_then(|_| fs::read(&output_path).ok())
         .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
@@ -517,7 +556,9 @@ fn app_icon(path: &Path, name: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn windows_shell_icon(path: &Path) -> Option<image::RgbaImage> {
-    windows_shell_thumbnail(path).or_else(|| windows_legacy_shell_icon(path))
+    let visible = |icon: &image::RgbaImage| icon.pixels().any(|pixel| pixel[3] >= 48);
+    windows_shell_thumbnail(path).filter(visible)
+        .or_else(|| windows_legacy_shell_icon(path).filter(visible))
 }
 
 #[cfg(target_os = "windows")]
@@ -826,6 +867,10 @@ fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
         return None;
     }
     let display_name = localized_app_name(path, &raw);
+    let app_category = plist::Value::from_file(path.join("Contents/Info.plist"))
+        .ok().and_then(|value| value.into_dictionary())
+        .and_then(|dictionary| dictionary.get("LSApplicationCategoryType")
+            .and_then(|value| value.as_string()).map(str::to_owned));
     let canonical = path.to_string_lossy().to_string();
     let id = format!("{:x}", Sha256::digest(canonical.as_bytes()));
     let installed_at = fs::metadata(path)
@@ -839,6 +884,7 @@ fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
         path: canonical.clone(),
         icon: Some(format!("app:{canonical}")),
         search_terms: format!("{} {}", display_name, raw),
+        app_category,
         installed_at,
         launch_count: 0,
         favorite: false,
@@ -1353,18 +1399,27 @@ fn run_apple_shortcut(name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn run_system_action(action: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    return run_macos_system_action(&action);
-    #[cfg(target_os = "windows")]
-    return run_windows_system_action(&action);
-    #[cfg(target_os = "linux")]
-    return run_linux_system_action(&action);
+async fn run_system_action(action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        return run_macos_system_action(&action);
+        #[cfg(target_os = "windows")]
+        return run_windows_system_action(&action);
+        #[cfg(target_os = "linux")]
+        return run_linux_system_action(&action);
+    }).await.map_err(|error| error.to_string())?
+}
+
+fn finish_system_command(mut command: Command) -> Result<(), String> {
+    let output = command.output().map_err(|error| error.to_string())?;
+    if output.status.success() { return Ok(()); }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if reason.is_empty() { format!("系统操作未完成：{}", output.status) } else { reason })
 }
 
 #[cfg(target_os = "macos")]
 fn run_macos_system_action(action: &str) -> Result<(), String> {
-    let mut command = match action {
+    let command = match action {
         "lock" => {
             let mut value = Command::new("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession");
             value.arg("-suspend"); value
@@ -1387,7 +1442,7 @@ fn run_macos_system_action(action: &str) -> Result<(), String> {
         "toggle-hidden-files" => osascript("set v to do shell script \"defaults read com.apple.finder AppleShowAllFiles 2>/dev/null || echo false\"\ndo shell script \"defaults write com.apple.finder AppleShowAllFiles -bool \" & (v is not \"1\" and v is not \"true\")\ntell application \"Finder\" to quit\ndelay 0.2\ntell application \"Finder\" to launch"),
         _ => return Err("不支持的系统操作".into()),
     };
-    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+    finish_system_command(command)
 }
 
 #[cfg(target_os = "macos")]
@@ -1399,9 +1454,11 @@ fn osascript(script: &str) -> Command {
 
 #[cfg(target_os = "windows")]
 fn run_windows_system_action(action: &str) -> Result<(), String> {
-    let mut command = match action {
+    let command = match action {
         "lock" => { let mut value = hidden_windows_command("rundll32.exe"); value.arg("user32.dll,LockWorkStation"); value }
-        "sleep" | "sleep-displays" => { let mut value = hidden_windows_command("rundll32.exe"); value.arg("powrprof.dll,SetSuspendState"); value }
+        "sleep" => powershell_action("Add-Type -AssemblyName System.Windows.Forms;if(-not [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend,$false,$false)){throw 'Windows could not enter sleep. Check the power settings.'}"),
+        "hibernate" => { let mut value = hidden_windows_command("shutdown.exe"); value.arg("/h"); value }
+        "sleep-displays" => powershell_action("Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QDisplay{[DllImport(\"user32.dll\",SetLastError=true)]public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,IntPtr l,uint f,uint t,out UIntPtr r);}';$r=[UIntPtr]::Zero;$ok=[QDisplay]::SendMessageTimeout([IntPtr]0xffff,0x0112,[UIntPtr]0xf170,[IntPtr]2,2,1500,[ref]$r);if($ok -eq [IntPtr]::Zero){throw 'Windows could not turn the display off.'}"),
         "restart" => { let mut value = hidden_windows_command("shutdown.exe"); value.args(["/r", "/t", "0"]); value }
         "shut-down" => { let mut value = hidden_windows_command("shutdown.exe"); value.args(["/s", "/t", "0"]); value }
         "log-out" => { let mut value = hidden_windows_command("shutdown.exe"); value.arg("/l"); value }
@@ -1418,7 +1475,7 @@ fn run_windows_system_action(action: &str) -> Result<(), String> {
         "show-desktop" => powershell_action("$s=New-Object -ComObject Shell.Application;$s.ToggleDesktop()"),
         _ => return Err("不支持的系统操作".into()),
     };
-    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+    finish_system_command(command)
 }
 
 #[cfg(target_os = "windows")]
@@ -1435,9 +1492,11 @@ fn windows_media_key(code: u8) -> Command {
 
 #[cfg(target_os = "linux")]
 fn run_linux_system_action(action: &str) -> Result<(), String> {
-    let mut command = match action {
+    let command = match action {
         "lock" => { let mut value = Command::new("loginctl"); value.arg("lock-session"); value }
-        "sleep" | "sleep-displays" => { let mut value = Command::new("systemctl"); value.arg("suspend"); value }
+        "sleep" => { let mut value = Command::new("systemctl"); value.arg("suspend"); value }
+        "hibernate" => { let mut value = Command::new("systemctl"); value.arg("hibernate"); value }
+        "sleep-displays" => { let mut value = Command::new("xset"); value.args(["dpms", "force", "off"]); value }
         "restart" => { let mut value = Command::new("systemctl"); value.arg("reboot"); value }
         "shut-down" => { let mut value = Command::new("systemctl"); value.arg("poweroff"); value }
         "log-out" => { let mut value = Command::new("loginctl"); value.arg("terminate-user").arg(std::env::var("USER").unwrap_or_default()); value }
@@ -1453,7 +1512,7 @@ fn run_linux_system_action(action: &str) -> Result<(), String> {
         "show-desktop" => { let mut value = Command::new("xdotool"); value.args(["key", "super+d"]); value }
         _ => return Err("不支持的系统操作".into()),
     };
-    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+    finish_system_command(command)
 }
 
 #[tauri::command]
@@ -2059,6 +2118,29 @@ fn hide_launcher(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_window_layout(window: tauri::WebviewWindow, layout: String) -> Result<(), String> {
+    let (width, height, min_width) = match layout.as_str() {
+        "grid" => (920.0_f64, 600.0_f64, 740.0_f64),
+        "list" => (680.0_f64, 600.0_f64, 620.0_f64),
+        _ => return Err("未知窗口布局".into()),
+    };
+    window.app_handle().state::<WindowRuntime>().protect_focus(Duration::from_millis(900));
+    let monitor = window.current_monitor().map_err(|error| error.to_string())?;
+    let (width, height) = monitor.as_ref().map(|monitor| {
+        let scale = monitor.scale_factor();
+        (width.min(monitor.size().width as f64 / scale * 0.92),
+         height.min(monitor.size().height as f64 / scale * 0.88))
+    }).unwrap_or((width, height));
+    window.set_min_size(Some(tauri::LogicalSize::new(min_width.min(width), 480.0_f64.min(height))))
+        .map_err(|error| error.to_string())?;
+    window.set_size(tauri::LogicalSize::new(width, height)).map_err(|error| error.to_string())?;
+    position_launcher(&window);
+    #[cfg(target_os = "windows")]
+    apply_windows_rounded_region(&window).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn set_auto_start(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     let manager = app.autolaunch();
     if enabled {
@@ -2080,6 +2162,7 @@ fn set_window_material(
     window: tauri::WebviewWindow,
     material: String,
     dark: bool,
+    follow_system: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -2087,13 +2170,20 @@ fn set_window_material(
         // 10 and may paint a second non-client strip in WebView2. The clipped
         // web surface renders the chosen material consistently instead.
         window.set_effects(None).map_err(|e| e.to_string())?;
-        let _ = (material, dark);
+        let _ = (material, dark, follow_system);
     }
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSGlassEffectView, NSGlassEffectViewStyle, NSWindow};
+        use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSGlassEffectView, NSGlassEffectViewStyle, NSWindow};
         let ns_window =
             unsafe { &*(window.ns_window().map_err(|e| e.to_string())? as *const NSWindow) };
+        let appearance = NSAppearance::appearanceNamed(unsafe {
+            if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua }
+        });
+        // Release a previously forced window appearance when returning to
+        // System. Otherwise WebKit's media query keeps reporting the forced
+        // theme rather than the user's current macOS appearance.
+        ns_window.setAppearance(if follow_system { None } else { appearance.as_deref() });
         if let Some(content) = ns_window.contentView() {
             if let Some(glass) = content.downcast_ref::<NSGlassEffectView>() {
                 glass.setCornerRadius(26.0);
@@ -2105,11 +2195,10 @@ fn set_window_material(
                 });
             }
         }
-        let _ = dark;
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = (window, material, dark);
+        let _ = (window, material, dark, follow_system);
     }
     Ok(())
 }
@@ -2532,8 +2621,8 @@ pub fn run() {
                     let _ = w.set_decorations(false);
                     let _ = w.set_resizable(true);
                     let _ = w.set_skip_taskbar(tray_ready);
-                    let _ = w.set_min_size(Some(tauri::LogicalSize::new(770.0, 524.0)));
-                    let _ = w.set_size(tauri::LogicalSize::new(957.0, 614.0));
+                    let _ = w.set_min_size(Some(tauri::LogicalSize::new(740.0, 480.0)));
+                    let _ = w.set_size(tauri::LogicalSize::new(920.0, 600.0));
                     let _ = apply_windows_rounded_region(&w);
                 }
                 position_launcher(&w);
@@ -2615,6 +2704,7 @@ pub fn run() {
             open_external_url,
             set_tray_visible,
             hide_launcher,
+            set_window_layout,
             set_auto_start,
             get_auto_start,
             set_window_material,
@@ -2707,6 +2797,27 @@ mod extension_storage_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_icons_have_equal_optical_size_despite_source_padding() {
+        let mut plain = image::RgbaImage::new(32, 32);
+        for pixel in plain.pixels_mut() { *pixel = image::Rgba([200, 30, 40, 255]); }
+        let mut padded = image::RgbaImage::new(128, 128);
+        image::imageops::overlay(&mut padded, &plain, 48, 48);
+        let normalized = normalize_windows_icon(plain);
+        assert_eq!(normalized, normalize_windows_icon(padded));
+        assert_eq!(normalized.dimensions(), (160, 160));
+        assert_eq!(normalized.get_pixel(0, 0)[3], 0);
+        assert_eq!(normalized.get_pixel(80, 80)[3], 255);
+    }
+    #[test]
+    fn windows_icon_normalization_handles_portrait_and_empty_sources() {
+        let portrait = image::RgbaImage::from_pixel(16, 64, image::Rgba([20, 80, 200, 255]));
+        let normalized = normalize_windows_icon(portrait);
+        assert_eq!(normalized.dimensions(), (160, 160));
+        let empty = normalize_windows_icon(image::RgbaImage::new(8, 8));
+        assert_eq!(empty.dimensions(), (160, 160));
+        assert!(empty.get_pixel(80, 80)[3] > 0);
+    }
     #[test]
     fn runs_captured_custom_shell_command_in_working_directory() {
         let root = std::env::temp_dir().join(format!("qimiao-command-fixture-{}", std::process::id()));

@@ -25,7 +25,6 @@ import {
   Check,
   ChevronLeft,
   Info,
-  Contrast,
   RotateCw,
   SlidersHorizontal,
   Download,
@@ -63,8 +62,11 @@ import {
   setTrayVisible,
   setWindowMaterial,
   suspendGlobalHotkeys,
+  setWindowLayout,
+  runSystemAction,
 } from "./tauri";
-import { pinyin } from "pinyin-pro";
+import { appSearchIndex, appDisplayName, matchesApp, categorizeApps } from "./app-catalog";
+import { findSystemActions, type SystemAction } from "./system-actions";
 import CommandCenter from "./CommandCenter";
 import { parseCompatibleBackup } from "./tinycast-compat";
 
@@ -164,7 +166,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.10";
+const APP_VERSION = "0.9.11";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -210,6 +212,8 @@ export default function App() {
     null,
   );
   const [toast, setToast] = useState("");
+  const [pendingSystemAction, setPendingSystemAction] = useState<SystemAction | null>(null);
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const searchRef = useRef<HTMLInputElement>(null);
   const categoryStripRef = useRef<HTMLDivElement>(null);
   const wheelLock = useRef(false);
@@ -296,15 +300,26 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2200);
   }
   useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     document.documentElement.dataset.material = settings.material;
-    const dark =
-      settings.theme === "dark" ||
-      (settings.theme === "system" &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-    void setWindowMaterial(settings.material, dark).catch(() => {});
+    const dark = settings.theme === "dark" || (settings.theme === "system" && systemDark);
+    document.documentElement.dataset.appearance = dark ? "dark" : "light";
+    void setWindowMaterial(settings.material, dark, settings.theme === "system").catch(() => {});
+  }, [settings.theme, settings.material, systemDark]);
+  useEffect(() => {
     save("float-settings", settings);
   }, [settings]);
+  useEffect(() => {
+    const layout = page === "home" && mode === "apps" && settings.viewMode === "list" ? "list" : "grid";
+    document.documentElement.dataset.layout = layout;
+    void setWindowLayout(layout).catch((error) => console.warn("调整窗口比例失败", error));
+  }, [settings.viewMode, mode, page]);
   useEffect(() => {
     document.documentElement.lang = settings.language === "en" ? "en" : "zh-CN";
     setTrayVisible(!settings.hideTray).catch(() => {});
@@ -369,6 +384,7 @@ export default function App() {
         setAvailableUpdate(null);
         setImportReview(null);
         setClearConfirm(false);
+        setPendingSystemAction(null);
         setPage("home");
         setMenu(null);
         setQuery("");
@@ -382,6 +398,7 @@ export default function App() {
     const key = (event: KeyboardEvent) => {
       if (
         page !== "home" ||
+        categoryManager || pendingSystemAction || clearConfirm || aboutOpen || importReview ||
         event.key !== "Tab" ||
         event.metaKey || event.ctrlKey || event.altKey ||
         event.isComposing || composingRef.current
@@ -397,7 +414,7 @@ export default function App() {
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [page]);
+  }, [page, categoryManager, pendingSystemAction, clearConfirm, aboutOpen, importReview]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -461,25 +478,38 @@ export default function App() {
     ],
     [apps, settings.categories],
   );
+  const searchIndices = useMemo(() => new Map(apps.map((app) => [app.id, appSearchIndex(app)])), [apps]);
+  const actionCandidates = useMemo(() => mode === "apps"
+    ? findSystemActions(query, isWindows ? "windows" : isMacos ? "macos" : "linux")
+    : [], [query, mode]);
+  async function executeSystemAction(action: SystemAction, confirmed = false) {
+    if (action.confirm && !confirmed) {
+      setPendingSystemAction(action);
+      return;
+    }
+    setPendingSystemAction(null);
+    try {
+      await runSystemAction(action.id);
+      await hideLauncher();
+    } catch (error) {
+      showToast(`${settings.language === "en" ? "Action failed" : "系统操作失败"}：${String(error)}`);
+    }
+  }
+  function smartCategorize(targetCategories = settings.categories, renamed: Record<string, string> = {}) {
+    const source = apps.map((app) => ({ ...app, category: app.category ? renamed[app.category] ?? app.category : undefined }));
+    const next = categorizeApps(source, targetCategories);
+    const changed = next.filter((app, index) => app.category && app.category !== apps[index].category).length;
+    setApps(next);
+    const remaining = next.filter((app) => !app.category).length;
+    showToast(settings.language === "en"
+      ? `Categorized ${changed} apps. ${remaining} left for manual assignment.`
+      : `已分类 ${changed} 个应用，${remaining} 个待手动分类`);
+  }
   const visible = useMemo(() => {
     let list = [...apps];
-    if (category !== "全部") list = list.filter((a) => a.category === category);
+    if (category !== "全部" && !query.trim()) list = list.filter((a) => a.category === category);
     if (query && mode === "apps") {
-      const q = query.toLowerCase().replace(/\s/g, "");
-      list = list.filter((a) => {
-        const text = `${a.name} ${a.searchTerms ?? ""}`;
-        const full = pinyin(text, { toneType: "none" })
-          .toLowerCase()
-          .replace(/\s/g, "");
-        const initials = pinyin(text, { pattern: "first", toneType: "none" })
-          .toLowerCase()
-          .replace(/\s/g, "");
-        return (
-          text.toLowerCase().includes(query.toLowerCase()) ||
-          full.includes(q) ||
-          initials.includes(q)
-        );
-      });
+      list = list.filter((app) => matchesApp(searchIndices.get(app.id) ?? [], query));
     }
     const sort = settings.sortBy;
     return list.sort((a, b) =>
@@ -495,9 +525,9 @@ export default function App() {
                 ? b.launchCount - a.launchCount
                 : smartScore(b) - smartScore(a),
     );
-  }, [apps, query, mode, settings.sortBy, category]);
+  }, [apps, query, mode, settings.sortBy, category, searchIndices]);
   const showRecommended =
-    settings.showRecommendations && !query && mode === "apps";
+    settings.showRecommendations && settings.viewMode === "grid" && category === "全部" && !query && mode === "apps";
   const libraryApps = showRecommended
     ? visible.filter((a) => !recommended.some((r) => r.id === a.id))
     : visible;
@@ -516,7 +546,7 @@ export default function App() {
     if (query)
       requestAnimationFrame(() =>
         document
-          .querySelector<HTMLElement>('.app-card[aria-selected="true"]')
+          .querySelector<HTMLElement>('[aria-selected="true"]')
           ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
       );
   }, [selectedSearchIndex, query]);
@@ -699,36 +729,35 @@ export default function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (page !== "home" || menu || categoryManager) return;
+      if (page !== "home" || menu || categoryManager || pendingSystemAction) return;
       const ime =
         event.isComposing ||
         composingRef.current ||
         event.keyCode === 229 ||
         Date.now() - compositionEndedAt.current < 140;
       if (ime) return;
-      if (mode !== "apps" || !query.trim() || !pageApps.length) return;
+      const resultCount = pageApps.length + actionCandidates.length;
+      if (mode !== "apps" || !query.trim() || !resultCount) return;
       const columns = settings.viewMode === "grid" ? 7 : 1;
       if (
         ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
       ) {
         event.preventDefault();
-        const delta =
-          event.key === "ArrowLeft"
-            ? -1
-            : event.key === "ArrowRight"
-              ? 1
-              : event.key === "ArrowUp"
-                ? -columns
-                : columns;
-        setSelectedSearchIndex((index) =>
-          Math.max(0, Math.min(pageApps.length - 1, index + delta)),
-        );
+        setSelectedSearchIndex((index) => {
+          const step = index < actionCandidates.length ? 1 : columns;
+          const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" ? -step : step;
+          const next = event.key === "ArrowUp" && index >= actionCandidates.length && index + delta < actionCandidates.length
+            ? actionCandidates.length - 1 : index + delta;
+          return Math.max(0, Math.min(resultCount - 1, next));
+        });
       } else if (event.key === "Enter") {
         event.preventDefault();
-        void open(
-          pageApps[Math.min(selectedSearchIndex, pageApps.length - 1)] ??
-            pageApps[0],
-        );
+        if (selectedSearchIndex < actionCandidates.length) {
+          void executeSystemAction(actionCandidates[selectedSearchIndex]);
+        } else {
+          const appIndex = Math.min(selectedSearchIndex - actionCandidates.length, pageApps.length - 1);
+          if (pageApps[appIndex]) void open(pageApps[appIndex]);
+        }
       }
     };
     window.addEventListener("keydown", key, true);
@@ -742,6 +771,8 @@ export default function App() {
     pageApps,
     selectedSearchIndex,
     settings.viewMode,
+    actionCandidates,
+    pendingSystemAction,
   ]);
   function toggleFavorite(id: string) {
     setApps((x) =>
@@ -765,7 +796,7 @@ export default function App() {
     showToast(`已移动到「${folder}」`);
   }
   return (
-    <main className="stage">
+    <main className={`stage ${page === "home" && mode === "apps" && settings.viewMode === "list" ? "list-layout" : ""}`}>
       <section className="launcher-shell">
         <div className="content">
           {availableUpdate && (
@@ -793,6 +824,7 @@ export default function App() {
                 }}
                 inputRef={searchRef}
                 theme={settings.theme}
+                systemDark={systemDark}
                 onTheme={() =>
                   updateSettings({
                     theme:
@@ -871,6 +903,8 @@ export default function App() {
                   setTools={setCommandTools}
                   setMode={setMode}
                   showToast={showToast}
+                  onSystemAction={executeSystemAction}
+                  blocked={Boolean(pendingSystemAction)}
                 />
               ) : mode === "ai" ? (
                 <AiPanel query={query} settings={settings} />
@@ -903,7 +937,7 @@ export default function App() {
                     <div className="library-bar">
                       <span>
                         {query
-                          ? `${visible.length} 个结果`
+                          ? settings.language === "en" ? `${visible.length + actionCandidates.length} results` : `${visible.length + actionCandidates.length} 个结果`
                           : showRecommended
                             ? "智能推荐 · 近期、常用与新安装"
                             : "所有应用"}
@@ -943,6 +977,7 @@ export default function App() {
                         </select>
                         <div className="view-switch">
                           <button
+                            aria-label={settings.language === "en" ? "Grid view" : "图标模式"}
                             className={
                               settings.viewMode === "grid" ? "active" : ""
                             }
@@ -951,6 +986,7 @@ export default function App() {
                             <Grid3X3 />
                           </button>
                           <button
+                            aria-label={settings.language === "en" ? "List view" : "列表模式"}
                             className={
                               settings.viewMode === "list" ? "active" : ""
                             }
@@ -961,6 +997,23 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                    {actionCandidates.length > 0 && (
+                      <div className="system-candidates" role="listbox" aria-label={settings.language === "en" ? "System commands" : "系统指令"}>
+                        {actionCandidates.map((action, index) => (
+                          <button
+                            key={action.id}
+                            role="option"
+                            aria-selected={index === selectedSearchIndex}
+                            className={index === selectedSearchIndex ? "selected" : ""}
+                            onClick={() => void executeSystemAction(action)}
+                          >
+                            <Power />
+                            <span><strong>{settings.language === "en" ? action.en : action.zh}</strong><small>{settings.language === "en" ? "System command" : "系统指令"}</small></span>
+                            <kbd>↵</kbd>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {visible.length ? (
                       <>
                         {showRecommended && (
@@ -969,6 +1022,7 @@ export default function App() {
                               <AppCard
                                 key={a.id}
                                 app={a}
+                                language={settings.language}
                                 compact
                                 onOpen={open}
                                 onMenu={(id, x, y) => setMenu({ id, x, y })}
@@ -985,9 +1039,10 @@ export default function App() {
                             <AppCard
                               key={a.id}
                               app={a}
+                              language={settings.language}
                               selected={
                                 Boolean(query.trim()) &&
-                                index === selectedSearchIndex
+                                index + actionCandidates.length === selectedSearchIndex
                               }
                               onOpen={open}
                               onMenu={(id, x, y) => setMenu({ id, x, y })}
@@ -1020,7 +1075,7 @@ export default function App() {
                           </div>
                         )}
                       </>
-                    ) : (
+                    ) : actionCandidates.length ? null : (
                       <Empty
                         onRefresh={
                           isWindows ? () => void addManualApp() : refresh
@@ -1076,6 +1131,12 @@ export default function App() {
       {categoryManager && (
         <CategoryManager
           categories={settings.categories}
+          onSmartCategorize={(next, renamed) => {
+            updateSettings({ categories: next });
+            smartCategorize(next, renamed);
+            setCategory("全部");
+            setCategoryManager(false);
+          }}
           onClose={() => setCategoryManager(false)}
           onSave={(next, renamed) => {
             updateSettings({ categories: next });
@@ -1139,6 +1200,21 @@ export default function App() {
           }}
         />
       )}
+      {pendingSystemAction && (
+        <>
+          <div className="scrim category-scrim" onClick={() => setPendingSystemAction(null)} />
+          <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="system-action-title">
+            <h2 id="system-action-title">{settings.language === "en" ? pendingSystemAction.en : pendingSystemAction.zh}</h2>
+            <p>{pendingSystemAction.id === "empty-trash"
+              ? settings.language === "en" ? "This permanently deletes all items in the Trash." : "这会永久删除废纸篓中的全部项目。"
+              : settings.language === "en" ? "Save your work before continuing." : "请先保存正在编辑的内容，再继续执行。"}</p>
+            <footer>
+              <button className="secondary" autoFocus onClick={() => setPendingSystemAction(null)}>{settings.language === "en" ? "Cancel" : "取消"}</button>
+              <button className="primary" onClick={() => void executeSystemAction(pendingSystemAction, true)}>{settings.language === "en" ? "Continue" : "执行"}</button>
+            </footer>
+          </section>
+        </>
+      )}
       {toast && (
         <div className="toast">
           <Check />
@@ -1159,6 +1235,7 @@ function Header({
   onCompositionEnd,
   inputRef,
   theme,
+  systemDark,
   onTheme,
   onSettings,
   onRefresh,
@@ -1173,6 +1250,7 @@ function Header({
   onCompositionEnd: () => void;
   inputRef: React.RefObject<HTMLInputElement>;
   theme: Settings["theme"];
+  systemDark: boolean;
   onTheme: () => void;
   onSettings: () => void;
   onRefresh: () => void;
@@ -1245,10 +1323,11 @@ function Header({
         </div>
         <button
           className="icon-btn"
-          title={en ? `Theme: ${theme}` : `主题：${theme}`}
+          title={en ? `Theme: ${theme}${theme === "system" ? systemDark ? " (dark)" : " (light)" : ""}` : `主题：${theme === "system" ? `跟随系统（${systemDark ? "深色" : "浅色"}）` : theme === "dark" ? "深色" : "浅色"}`}
+          aria-label={en ? `Theme: ${theme}` : `主题：${theme === "system" ? "跟随系统" : theme === "dark" ? "深色" : "浅色"}`}
           onClick={onTheme}
         >
-          <Contrast />
+          {theme === "system" ? <Monitor /> : theme === "dark" ? <Moon /> : <Sun />}
         </button>
         {!isWindows && (
           <button
@@ -1294,6 +1373,7 @@ function SectionTitle({
 }
 function AppCard({
   app,
+  language,
   compact,
   selected,
   onOpen,
@@ -1301,6 +1381,7 @@ function AppCard({
   onGroup,
 }: {
   app: AppItem;
+  language: Settings["language"];
   compact?: boolean;
   selected?: boolean;
   onOpen: (a: AppItem) => void;
@@ -1328,8 +1409,8 @@ function AppCard({
       settled = true;
       clearTimeout(timer);
       if (active) {
-        setIconSrc(src);
-        setIconFailed(false);
+        setIconSrc(src || "");
+        setIconFailed(!src.startsWith("data:image/"));
       }
     };
     const fail = () => {
@@ -1346,7 +1427,7 @@ function AppCard({
       clearTimeout(timer);
     };
   }, [app.icon, app.name]);
-  const fallback = app.icon?.split("|") ?? ["#667085", app.name?.[0] ?? "?"];
+  const fallback = !image && app.icon?.includes("|") ? app.icon.split("|") : ["#667085", app.name?.[0] ?? "?"];
   const bg = image && !iconFailed ? "transparent" : fallback[0];
   const label = image ? (app.name?.[0] ?? "?") : fallback[1];
   return (
@@ -1382,7 +1463,7 @@ function AppCard({
         style={{ background: bg }}
       >
         {image && iconSrc ? (
-          <img src={iconSrc} />
+          <img src={iconSrc} alt="" draggable={false} onError={() => { setIconSrc(""); setIconFailed(true); }} />
         ) : image && !iconFailed ? (
           <span className="icon-loading" />
         ) : (
@@ -1391,7 +1472,7 @@ function AppCard({
         <span className="shine" />
       </div>
       <div className="app-meta">
-        <strong>{app.name || "未知应用"}</strong>
+        <strong title={app.name}>{appDisplayName(app, language) || "未知应用"}</strong>
         {!compact && <span>{app.category ?? "应用"}</span>}
       </div>
       {app.favorite && <Star className="favorite" fill="currentColor" />}
@@ -1485,10 +1566,12 @@ function CategoryManager({
   categories,
   onClose,
   onSave,
+  onSmartCategorize,
 }: {
   categories: string[];
   onClose: () => void;
   onSave: (next: string[], renamed: Record<string, string>) => void;
+  onSmartCategorize: (next: string[], renamed: Record<string, string>) => void;
 }) {
   const [rows, setRows] = useState(() =>
     categories.map((name, index) => ({
@@ -1510,14 +1593,14 @@ function CategoryManager({
       return next;
     });
   };
-  const saveRows = () => {
+  const saveRows = (classify = false) => {
     const valid = rows
       .map((row) => ({ ...row, name: row.name.trim() }))
       .filter((row) => row.name);
     const unique = valid.filter(
       (row, index) => valid.findIndex((x) => x.name === row.name) === index,
     );
-    onSave(
+    (classify ? onSmartCategorize : onSave)(
       unique.map((row) => row.name),
       Object.fromEntries(
         unique
@@ -1539,6 +1622,10 @@ function CategoryManager({
             <X />
           </button>
         </header>
+        <button className="category-smart secondary" onClick={() => saveRows(true)} disabled={!rows.some((row) => row.name.trim())}>
+          <Sparkles /> 一键智能分类
+        </button>
+        <p className="category-smart-hint">按现有分类整理未分类应用，保留手动分配的分类。</p>
         <div className="category-editor-list">
           {rows.map((row) => (
             <div
@@ -1610,7 +1697,7 @@ function CategoryManager({
         </button>
         <footer>
           <button onClick={onClose}>取消</button>
-          <button className="primary" onClick={saveRows}>
+          <button className="primary" onClick={() => saveRows()}>
             <Check />
             保存更改
           </button>

@@ -129,10 +129,16 @@ export async function getAutoStart(): Promise<boolean> {
   }
   return false;
 }
-export async function setWindowMaterial(material: string, dark: boolean) {
+export async function setWindowMaterial(material: string, dark: boolean, followSystem = false) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_window_material", { material, dark });
+    await invoke("set_window_material", { material, dark, followSystem });
+  }
+}
+export async function setWindowLayout(layout: "grid" | "list") {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_window_layout", { layout });
   }
 }
 export type FileSearchResult = {

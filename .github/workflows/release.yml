@@ -59,6 +59,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm test
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,14 +70,18 @@ jobs:
           releaseBody: |
             启喵 / qimiao 跨平台安装包。
 
-            - 接通 TinyCast/Raycast 数据迁移后的实际运行链路：Quicklinks、Snippets、Notes 与自定义命令均可在启喵内执行
-            - 自定义命令支持动态占位符、参数、工作目录、运行确认与输出捕获；导入命令默认需要确认
-            - Quicklink 支持路径、URL、deeplink，以及在 macOS 上使用指定应用打开
-            - AI、命令、剪贴板模式切换后自动聚焦搜索框，AI 支持回车执行
-            - 分类管理支持拖拽排序并持久化
-            - 统一排序与视图控件样式，增强液态玻璃深色模式对比度，并移除固定紫色／青色网页光斑
+            - 界面更加紧凑，列表模式自动收窄为可滚动单列，统一中性材质与控件阴影
+            - 中文系统应用名称、全拼及首字母搜索；支持“终端”“活动”等中文查询
+            - 一键智能分类：在本地匹配已有分类，保留手动分类，不确定的应用留作手动整理
+            - 跟随系统、浅色与深色主题使用不同图标，修复 macOS 切回跟随系统后的外观状态
+            - 首页中文搜索可选关机、重启、睡眠、锁屏、熄屏等系统指令；重要操作需要确认，休眠按平台提供
+            - Windows 图标裁掉透明边距后统一可见尺寸与圆角底板，刷新旧图标缓存，空图标不再无限加载
 
-            qimiao 0.9.10 connects imported TinyCast/Raycast data to working Quicklinks, Snippets, Notes and custom commands, adds command placeholders, confirmation, working directories and output capture, enables category drag sorting, and improves neutral glass styling and dark-mode contrast.
+            qimiao 0.9.11 brings a more compact launcher and narrower list view, Chinese system-app aliases and Pinyin search, local smart classification that preserves manual assignments, distinct theme icons with corrected system appearance tracking, searchable platform-specific system actions with confirmation, and normalized Windows icon sizing on consistent rounded tiles.
+
+            验证：前端构建、自动测试、macOS 编译及 Windows x64 交叉编译检查通过。Windows 图标视觉效果仍需实机验证；测试未实际执行关机等电源操作。
+
+            Validation: frontend build and tests, native Rust tests, macOS compilation, and Windows x64 cross-compilation checks passed. Windows icon appearance still needs on-device verification. Power actions were not executed during testing.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: false

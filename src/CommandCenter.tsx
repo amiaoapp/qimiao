@@ -8,8 +8,9 @@ import {
 import type { CommandTool, LauncherMode, Settings } from "./types";
 import { calculateExpression, convertUnits, emojiCatalog, matchText, type CommandResult } from "./command-center";
 import { expandCompatibleTemplate, normalizeCompatibleDestination, toolArgumentInput, toolMatchesQuery } from "./tinycast-compat";
+import { availableSystemActions, type SystemAction } from "./system-actions";
 import {
-  listAppleShortcuts, openPath, runAppleShortcut, runSystemAction,
+  listAppleShortcuts, openPath, runAppleShortcut,
   runWindowAction, searchFiles, setClipboardText, openExternalUrl, runCustomCommand,
 } from "./tauri";
 
@@ -23,6 +24,8 @@ type Props = {
   setTools: (tools: CommandTool[]) => void;
   setMode: (mode: LauncherMode) => void;
   showToast: (message: string) => void;
+  onSystemAction: (action: SystemAction) => void;
+  blocked: boolean;
 };
 
 const iconFor = (result: CommandResult) => {
@@ -83,20 +86,10 @@ export default function CommandCenter(props: Props) {
     const trimmed = query.trim();
     const calculator = calculateExpression(trimmed);
     const conversion = convertUnits(trimmed);
-    const systemActions: CommandResult[] = [
-      ["sleep", "Sleep", "睡眠"], ["sleep-displays", "Sleep Displays", "关闭显示器"],
-      ["show-screen-saver", "Show Screen Saver", "启动屏幕保护"],
-      ["play-pause", "Play / Pause", "播放／暂停"], ["next-track", "Next Track", "下一曲"],
-      ["previous-track", "Previous Track", "上一曲"], ["toggle-mute", "Toggle Mute", "静音切换"],
-      ["volume-up", "Turn Volume Up", "调高音量"], ["volume-down", "Turn Volume Down", "调低音量"],
-      ["show-desktop", "Show Desktop", "显示桌面"], ["open-trash", "Open Trash", "打开废纸篓"],
-      ["toggle-hidden-files", "Toggle Hidden Files", "显示／隐藏文件"],
-      ["restart", "Restart", "重新启动"], ["shut-down", "Shut Down", "关机"],
-      ["log-out", "Log Out", "注销"], ["empty-trash", "Empty Trash", "清空废纸篓"],
-    ].map(([action, english, chinese]) => ({
-      id: `system:${action}`, title: en ? english : chinese,
+    const systemActions: CommandResult[] = availableSystemActions(navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "macos" : "linux").map((action) => ({
+      id: `system:${action.id}`, title: en ? action.en : action.zh,
       subtitle: en ? "System Action" : "系统操作", kind: "command" as const,
-      action: `system:${action}`,
+      action: `system:${action.id}`, searchTerms: `${action.zh} ${action.en} ${action.aliases}`,
     }));
     const windowActions: CommandResult[] = [
       ["left", "Window: Left Half", "窗口：左半屏"], ["right", "Window: Right Half", "窗口：右半屏"],
@@ -113,7 +106,6 @@ export default function CommandCenter(props: Props) {
     const base: CommandResult[] = [
       { id: "clipboard", title: en ? "Clipboard History" : "剪贴板历史", subtitle: en ? "Search and paste recent text" : "搜索并复制最近的文本", kind: "command", action: "clipboard" },
       { id: "files", title: en ? "Search Files" : "搜索文件", subtitle: en ? "Type file: followed by a name" : "输入 file: 后跟文件名", kind: "command", action: "files" },
-      { id: "lock", title: en ? "Lock Screen" : "锁定屏幕", subtitle: en ? "Lock this computer" : "立即锁定这台电脑", kind: "command", action: "lock" },
       { id: "dictionary", title: en ? "Define a Word" : "查询词典", subtitle: en ? "Type dict: followed by a word" : "输入 dict: 后跟单词", kind: "command", action: "dictionary-help" },
       { id: "calendar", title: en ? "Open Calendar" : "打开日历", subtitle: en ? "Open the system calendar" : "打开系统日历", kind: "command", action: "open-calendar" },
       { id: "add-link-help", title: en ? "Add Quicklink" : "添加快速链接", subtitle: "link: title | https://example.com", kind: "command", action: "help-link" },
@@ -176,7 +168,7 @@ export default function CommandCenter(props: Props) {
       } as CommandResult]),
       ...files,
       ...toolResults,
-      ...[...base, ...systemActions, ...windowActions].filter((item) => !trimmed || matchText(`${item.title} ${item.subtitle}`, trimmed)),
+      ...[...base, ...systemActions, ...windowActions].filter((item) => !trimmed || matchText(`${item.title} ${item.subtitle} ${item.searchTerms ?? ""}`, trimmed)),
       ...shortcutResults,
       ...emoji,
     ];
@@ -184,7 +176,7 @@ export default function CommandCenter(props: Props) {
   useEffect(() => setSelected(0), [query, mode]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.isComposing || event.keyCode === 229 || !results.length) return;
+      if (props.blocked || event.defaultPrevented || event.isComposing || event.keyCode === 229 || !results.length) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         setSelected((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + results.length) % results.length);
@@ -211,12 +203,12 @@ export default function CommandCenter(props: Props) {
         setTools([...tools, { ...tool, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }]);
         return showToast(en ? "Saved to Command Center" : "已保存到命令中心");
       }
-      if (result.action === "lock") await runSystemAction("lock");
-      else if (result.action?.startsWith("system:")) {
+      if (result.action?.startsWith("system:")) {
         const action = result.action.slice(7);
-        if (["restart", "shut-down", "log-out", "empty-trash"].includes(action)
-          && !window.confirm(en ? `Run “${result.title}”?` : `确认执行“${result.title}”？`)) return;
-        await runSystemAction(action);
+        const available = availableSystemActions(navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "macos" : "linux");
+        const item = available.find((candidate) => candidate.id === action);
+        if (item) props.onSystemAction(item);
+        return;
       }
       else if (result.action?.startsWith("window:")) await runWindowAction(result.action.slice(7));
       else if (result.action === "tool-quicklink" && result.path) {

@@ -1,11 +1,12 @@
 {
   "name": "qimiao-launcher",
   "private": true,
-  "version": "0.9.10",
+  "version": "0.9.11",
   "license": "AGPL-3.0-or-later",
   "repository": "https://github.com/amiaoapp/qimiao",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/launcher.test.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "tauri": "tauri"

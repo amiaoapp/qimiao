@@ -4,6 +4,7 @@ export type AppItem = {
   path: string;
   icon?: string;
   searchTerms?: string;
+  appCategory?: string;
   lastUsed?: number;
   installedAt?: number;
   launchCount: number;

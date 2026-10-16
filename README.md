@@ -19,7 +19,8 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 ## 功能 / Features
 
 - 可选择自动扫描系统应用，也可完全关闭扫描并逐个添加应用；扫描确认可选，刷新会清理已卸载应用
-- 支持收藏、分类横向浏览、中文、全拼与首字母搜索，以及配置备份导入导出
+- 支持收藏、分类横向浏览、中文系统应用别名、全拼与首字母搜索，以及配置备份导入导出
+- 一键按已有分类整理未分类应用，保留手动分类；列表模式自动收窄窗口
 - Launchpad 式分页、纵向列表、键盘二维导航与智能推荐行
 - macOS 26+ 原生 `NSGlassEffectView` 液态玻璃，旧系统与其他平台提供视觉回退
 - 自定义全局快捷键、菜单栏常驻、失焦或 Esc 隐藏、开机启动
@@ -34,7 +35,8 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 ---
 
 - Optional automatic discovery or a fully manual app list, optional scan review, and automatic cleanup of uninstalled apps
-- Favorites, horizontally navigable categories, Chinese/Pinyin/initial search, and portable configuration backup/restore
+- Favorites, horizontally navigable categories, Chinese system-app aliases/Pinyin/initial search, and portable configuration backup/restore
+- One-click local classification into existing categories, preserving manual assignments; a narrower single-column list view
 - Launchpad-style pagination, vertical list view, 2D keyboard navigation, smart recommendations
 - Native macOS 26+ `NSGlassEffectView` with polished fallbacks on older macOS, Windows, and Linux
 - Custom global hotkeys, menu-bar mode, blur/Escape-to-hide, launch at login
@@ -52,6 +54,8 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 npm install
 npm run tauri dev
 ```
+
+回归检查 / Regression checks: `npm test` and `cargo test --manifest-path src-tauri/Cargo.toml --lib`.
 
 ## 构建 / Build
 

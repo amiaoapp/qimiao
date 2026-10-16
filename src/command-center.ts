@@ -7,6 +7,7 @@ export type CommandResult = {
   value?: string;
   path?: string;
   action?: string;
+  searchTerms?: string;
 };
 
 const tokenize = (source: string) => {

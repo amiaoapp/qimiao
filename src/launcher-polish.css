@@ -1,0 +1,102 @@
+/* Desktop launcher surfaces: native system typography, neutral materials,
+   10px controls / 14px cards / 26px window. No animated optical overlays. */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --control-surface: rgba(255,255,255,.45);
+  --control-edge: rgba(55,60,70,.13);
+  --text: #292c33;
+  --muted: #646974;
+  color: var(--text);
+}
+:root[data-appearance=dark] {
+  --control-surface: rgba(43,45,50,.78);
+  --control-edge: rgba(255,255,255,.18);
+  --text: #f1f2f4;
+  --muted: #b9bdc5;
+  color: var(--text);
+}
+html,body,#root { min-width:620px; min-height:480px; }
+.stage { height:100dvh; }
+.content { padding:20px 28px 14px; }
+.launchpad-header { height:50px; min-height:50px; grid-template-columns:minmax(0,1fr) max-content; gap:14px; margin-bottom:12px; }
+.launchpad-header .search-wrap { height:44px; border-radius:14px; background:var(--control-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 5px 18px rgba(35,40,50,.05); }
+.search-wrap input { font-size:14px; }
+.search-wrap:focus-within { box-shadow:0 0 0 3px rgba(101,115,242,.12); }
+.launchpad-header .header-actions { padding:3px; gap:2px; border-radius:14px; background:var(--control-surface); border-color:var(--control-edge); }
+.launchpad-header .mode-switch button,.launchpad-header .icon-btn { width:30px!important; height:32px!important; padding:0!important; font-size:0!important; justify-content:center; border-radius:10px; }
+.launchpad-header .header-actions svg { width:17px; height:17px; stroke-width:1.8; }
+.launchpad-header .mode-switch { display:flex!important; }
+.search-wrap kbd { display:none; }
+
+:root[data-material=glass] .launcher-shell { background:rgba(247,248,250,.76)!important; backdrop-filter:blur(32px) saturate(115%)!important; -webkit-backdrop-filter:blur(32px) saturate(115%)!important; }
+:root[data-material=liquid] .launcher-shell { background:rgba(248,249,251,.24)!important; }
+:root[data-material=glass] .launcher-shell:after,:root[data-material=liquid] .launcher-shell:after { background:transparent!important; }
+:root[data-appearance=dark][data-material=glass] .launcher-shell { background:rgba(36,38,43,.82)!important; }
+:root[data-appearance=dark][data-material=liquid] .launcher-shell { background:rgba(26,28,33,.4)!important; }
+:root[data-platform=windows][data-material=glass] .launcher-shell,:root[data-platform=windows][data-material=liquid] .launcher-shell { background:rgba(245,246,248,.95)!important; }
+:root[data-platform=windows][data-appearance=dark][data-material=glass] .launcher-shell,:root[data-platform=windows][data-appearance=dark][data-material=liquid] .launcher-shell { background:rgba(37,39,45,.96)!important; }
+
+.category-nav { width:100%; height:38px; min-height:38px; margin-bottom:6px; }
+.category-strip,.category-arrow,.category-nav>.add-category { align-self:center; }
+.category-strip button,.category-arrow,.category-nav>.add-category { height:28px; font-size:10px; border-radius:10px; color:var(--muted); }
+.category-strip button.active { color:var(--text); }
+.library-bar { height:38px; min-height:38px; padding:0 4px; }
+.library-controls select,.library-controls .view-switch { height:32px!important; border-radius:11px!important; background-color:var(--control-surface)!important; border-color:var(--control-edge)!important; }
+.library-controls .view-switch button { height:24px!important; }
+.library-controls select { font-weight:500!important; }
+.recommend-grid { min-height:86px; background:none; gap:4px 10px; }
+.launchpad .grid.app-library { grid-template-columns:repeat(7,minmax(0,1fr))!important; grid-template-rows:repeat(4,minmax(0,1fr)); gap:4px 10px; padding:4px 0; }
+.has-recommend .grid.app-library { grid-template-rows:repeat(3,minmax(0,1fr)); }
+.launchpad .app-card { min-height:0; padding:5px 3px; gap:6px; transform:none!important; }
+.launchpad .app-icon { width:clamp(46px,10.5vh,64px); height:clamp(46px,10.5vh,64px); border-radius:16px; flex:none; }
+.launchpad .app-meta strong { font-size:11px; font-weight:500; line-height:1.4; color:var(--text); }
+.app-icon.native-icon { overflow:visible; box-shadow:none; border-radius:0; }
+.app-icon.native-icon img { border-radius:0; filter:drop-shadow(0 2px 1px rgba(0,0,0,.13)) drop-shadow(0 5px 6px rgba(34,38,46,.12)); }
+.launchpad .app-card:hover .app-icon.native-icon img { filter:drop-shadow(0 2px 1px rgba(0,0,0,.13)) drop-shadow(0 5px 6px rgba(34,38,46,.12)); }
+.launchpad .app-card:not(.keyboard-selected):hover { background:rgba(127,132,144,.065)!important; box-shadow:none!important; }
+:root[data-material=liquid] .launchpad .app-card:not(.keyboard-selected):hover { background:transparent!important; }
+.app-card:focus-visible,.category-drag-handle:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.launchpad .favorite { top:4px; right:8px; width:11px; }
+.pagination { flex:none; }
+
+:root[data-appearance=dark] .launchpad-header .header-actions,:root[data-appearance=dark] .library-controls select,:root[data-appearance=dark] .view-switch { background-color:var(--control-surface)!important; color:var(--text)!important; border-color:var(--control-edge)!important; }
+:root[data-appearance=dark] .launchpad-header .mode-switch button,:root[data-appearance=dark] .launchpad-header .icon-btn,:root[data-appearance=dark] .view-switch button { color:#d9dce3!important; }
+:root[data-appearance=dark] .launchpad-header .mode-switch button.active,:root[data-appearance=dark] .view-switch button.active { color:#fafbfc!important; background:rgba(255,255,255,.14)!important; }
+:root[data-appearance=dark] .category-strip button,:root[data-appearance=dark] .category-arrow,:root[data-appearance=dark] .category-nav>.add-category { color:var(--text); background:rgba(255,255,255,.075); }
+
+.list-layout .content { padding:20px 24px; }
+.list-layout .launchpad-header { gap:10px; }
+.list-layout .launchpad .list.app-library { display:flex; flex-direction:column; gap:3px; overflow-y:auto; overflow-x:hidden; padding:5px 2px 10px; }
+.list-layout .launchpad .list .app-card { flex:none; width:100%; height:58px; justify-content:flex-start; padding:6px 12px; gap:12px; }
+.list-layout .launchpad .list .app-icon { width:42px; height:42px; }
+.list-layout .app-meta strong { font-size:12px; }
+.list-layout .app-meta span { display:block; font-size:10px; }
+.list-layout .list .favorite { top:20px; right:35px; }
+.list-layout .list .more { bottom:20px; right:9px; }
+.list-layout .app-meta { padding-right:34px; }
+
+.system-candidates { display:flex; flex-direction:column; gap:4px; max-height:180px; overflow:auto; flex:none; margin:4px 0 8px; }
+.system-candidates>button { height:49px; min-height:49px; display:flex; align-items:center; gap:12px; padding:7px 14px; border:1px solid var(--line); border-radius:11px; text-align:left; background:var(--control-surface); }
+.system-candidates>button.selected { box-shadow:inset 0 0 0 1px var(--accent); }
+.system-candidates>button>svg { width:20px; color:var(--text); }
+.system-candidates span { display:flex; flex:1; flex-direction:column; gap:2px; }
+.system-candidates strong { font-size:12px; font-weight:600; }
+.system-candidates small { font-size:10px; color:var(--muted); }
+.system-candidates kbd { color:var(--muted); }
+.category-smart { width:100%; justify-content:center; flex:none; height:30px; font-size:11px; }
+.category-smart-hint { font-size:9px; color:var(--muted); line-height:1.5; margin:7px 0 12px; }
+.category-manager header { height:auto; min-height:45px; }
+.category-editor-list { min-height:0; flex:1; }
+.category-add-row { flex:none; }
+@media(max-width:740px) {
+  .content { padding:16px 20px 12px; }
+  .launchpad-header { gap:8px; }
+  .launchpad-header .header-actions svg { width:16px; height:16px; }
+  .launchpad-header .mode-switch button,.launchpad-header .icon-btn { width:28px!important; }
+  .category-strip button { padding:0 10px; }
+}
+@media(prefers-reduced-motion:reduce) { .page-enter,.recommend-grid { animation:none; } }
+@media(prefers-reduced-transparency:reduce) {
+  :root[data-material] .launcher-shell { background:#f5f6f8!important; backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
+  :root[data-appearance=dark][data-material] .launcher-shell { background:#25272d!important; }
+}
