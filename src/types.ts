@@ -1,3 +1,6 @@
+import { defaultClipOptions, type ClipOptions } from "./clipboard-core";
+export type DavOptions = { url: string; username: string; allowInsecure: boolean; remember: boolean; clipboardEnabled: boolean; configurationEnabled: boolean; autoClipboard: boolean; syncImages: boolean; intervalMinutes: number };
+export const defaultDavOptions: DavOptions = { url:"", username:"", allowInsecure:false, remember:true, clipboardEnabled:false, configurationEnabled:false, autoClipboard:false, syncImages:false, intervalMinutes:15 };
 export type AppItem = {
   id: string;
   name: string;
@@ -9,6 +12,7 @@ export type AppItem = {
   installedAt?: number;
   launchCount: number;
   favorite: boolean;
+  pinnedAt?: number;
   manual?: boolean;
   category?: string;
 };
@@ -55,6 +59,9 @@ export type Settings = {
   language: "zh" | "en";
   theme: Theme;
   material: Material;
+  fontFamily: string;
+  motionEffects: boolean;
+  compactMode: boolean;
   viewMode: ViewMode;
   sortBy: SortBy;
   categories: string[];
@@ -68,6 +75,8 @@ export type Settings = {
   autoStart: boolean;
   updateCheckSchedule: UpdateCheckSchedule;
   clipboardHistoryEnabled: boolean;
+  clipboardOptions: ClipOptions;
+  webdav: DavOptions;
   fileSearchDirs: string[];
   aiProvider: string;
   aiEndpoint: string;
@@ -78,6 +87,9 @@ export const defaultSettings: Settings = {
   language: "zh",
   theme: "system",
   material: "liquid",
+  fontFamily: "",
+  motionEffects: true,
+  compactMode: false,
   viewMode: "grid",
   sortBy: "smart",
   categories: ["效率工具", "开发工具", "创意设计", "娱乐休闲"],
@@ -91,6 +103,8 @@ export const defaultSettings: Settings = {
   autoStart: false,
   updateCheckSchedule: "launch",
   clipboardHistoryEnabled: true,
+  clipboardOptions: defaultClipOptions,
+  webdav: defaultDavOptions,
   fileSearchDirs: [],
   aiProvider: "OpenAI Compatible",
   aiEndpoint: "https://api.openai.com/v1/chat/completions",

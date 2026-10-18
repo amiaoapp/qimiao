@@ -42,7 +42,7 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils libdbus-1-dev libxcb1-dev libx11-dev libxrandr-dev
 
       - uses: actions/setup-node@v6
         with:
@@ -70,16 +70,17 @@ jobs:
           releaseBody: |
             启喵 / qimiao 跨平台安装包。
 
-            - 界面更加紧凑，列表模式自动收窄为可滚动单列，统一中性材质与控件阴影
-            - 中文系统应用名称、全拼及首字母搜索；支持“终端”“活动”等中文查询
-            - 一键智能分类：在本地匹配已有分类，保留手动分类，不确定的应用留作手动整理
-            - 跟随系统、浅色与深色主题使用不同图标，修复 macOS 切回跟随系统后的外观状态
-            - 首页中文搜索可选关机、重启、睡眠、锁屏、熄屏等系统指令；重要操作需要确认，休眠按平台提供
-            - Windows 图标裁掉透明边距后统一可见尺寸与圆角底板，刷新旧图标缓存，空图标不再无限加载
+            - 新增简洁模式：仅保留搜索、最近记录和常用命令，支持键盘选择与一键展开
+            - 点击应用即收起启动台，不再等待系统启动完成；收藏应用在每页固定置顶
+            - Windows 改用单层 6px 小圆角；图标按实际位图尺寸读取并减少透明/白底留白，刷新旧缓存
+            - Windows 统一手动添加入口：桌面、开始菜单、指定文件夹批量勾选，或直接多选程序文件，不在后台自动抓取
+            - 新的猫头与启动箭头图标；中性材质、本机字体切换、可关闭动效和窗口拖动
+            - 剪贴板支持图片/文件/富文本、分组置顶、编辑导出和接力粘贴；适配 PasteMemo 的部分行为，非完整移植
+            - 配置和剪贴板分别支持自有 WebDAV 同步，密码保存在系统密钥库，敏感条目及本地文件路径不上传
 
-            qimiao 0.9.11 brings a more compact launcher and narrower list view, Chinese system-app aliases and Pinyin search, local smart classification that preserves manual assignments, distinct theme icons with corrected system appearance tracking, searchable platform-specific system actions with confirmation, and normalized Windows icon sizing on consistent rounded tiles.
+            qimiao 0.9.12 adds a compact search palette, immediate hide-on-launch, persistent favorites, a unified manual Windows app importer, actual-size Windows icon extraction and smaller single-layer corners. It also includes a refined cat-and-arrow identity, local font selection, optional motion, a richer clipboard workspace with selected PasteMemo adaptations, and separate opt-in WebDAV sync for configuration and clipboard history. Credentials remain in the OS keychain; sensitive entries and local file paths are excluded from sync.
 
-            验证：前端构建、自动测试、macOS 编译及 Windows x64 交叉编译检查通过。Windows 图标视觉效果仍需实机验证；测试未实际执行关机等电源操作。
+            验证：前端构建、13 组前端测试、18 组 Rust 测试、macOS 打包及 Windows x64 交叉编译检查通过。Windows 图标和圆角视觉效果仍需实机验证；测试未实际执行关机等电源操作。
 
             Validation: frontend build and tests, native Rust tests, macOS compilation, and Windows x64 cross-compilation checks passed. Windows icon appearance still needs on-device verification. Power actions were not executed during testing.
 

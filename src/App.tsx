@@ -33,6 +33,9 @@ import {
   Command as CommandIcon,
   ClipboardList,
   GripVertical,
+  ChevronDown,
+  ArrowUpDown,
+  PanelTopClose,
 } from "lucide-react";
 import {
   defaultSettings,
@@ -44,7 +47,6 @@ import {
 import {
   chooseApps,
   chooseFolder,
-  clipboardText,
   desktopApps,
   existingAppPaths,
   exportBackup,
@@ -63,12 +65,25 @@ import {
   setWindowMaterial,
   suspendGlobalHotkeys,
   setWindowLayout,
+  startWindowDrag,
   runSystemAction,
+  setClipboardText,
 } from "./tauri";
 import { appSearchIndex, appDisplayName, matchesApp, categorizeApps } from "./app-catalog";
 import { findSystemActions, type SystemAction } from "./system-actions";
 import CommandCenter from "./CommandCenter";
 import { parseCompatibleBackup } from "./tinycast-compat";
+import FontPicker from "./FontPicker";
+import { fontStackFor } from "./appearance";
+import { appPageLayout } from "./app-layout";
+import { useClipboardHistory } from "./useClipboardHistory";
+import ClipboardPane from "./ClipboardPane";
+import { useWebDav } from "./useWebDav";
+import WebDavPanel from "./WebDavPanel";
+import { normalizeSettings, portableConfiguration, applyAppPreferences, type AppPreference, type PortableConfig } from "./sync-core";
+import CompactLauncher from "./CompactLauncher";
+import AppImporter from "./AppImporter";
+import {launchWithImmediateHide,type CommonCommand,type RecentCommand} from "./compact-results";
 
 const load = <T,>(key: string, fallback: T): T => {
   try {
@@ -98,7 +113,8 @@ const newerVersion = (latest: string, current: string) => {
   }
   return false;
 };
-const isWindows = navigator.userAgent.includes("Windows");
+const previewPlatform = import.meta.env.DEV ? new URLSearchParams(location.search).get("platform") : null;
+const isWindows = previewPlatform ? previewPlatform === "windows" : navigator.userAgent.includes("Windows");
 const isMacos = navigator.userAgent.includes("Mac");
 document.documentElement.dataset.platform = isWindows
   ? "windows"
@@ -148,7 +164,7 @@ const windowsMaintenanceEntry = (name: string) => {
 };
 const loadApps = (): AppItem[] =>
   load<AppItem[]>("float-apps", [])
-    .filter((app) => !isWindows || !windowsMaintenanceEntry(app.name))
+    .filter((app) => !isWindows || app.manual || !windowsMaintenanceEntry(app.name))
     .map((app) => ({
       ...app,
       icon:
@@ -166,13 +182,13 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.11";
+const APP_VERSION = "0.9.12";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
   const [settings, setSettings] = useState(() => {
     const stored = load<Partial<Settings>>("float-settings", {});
-    const merged = { ...defaultSettings, ...stored };
+    const merged = normalizeSettings(stored);
     return isWindows
       ? {
           ...merged,
@@ -185,13 +201,26 @@ export default function App() {
   const [apps, setApps] = useState<AppItem[]>(loadApps);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<LauncherMode>("apps");
-  const [clipboardEntries, setClipboardEntries] = useState<string[]>(() =>
-    load<string[]>("qimiao-clipboard-history", []),
-  );
+  const clipboard = useClipboardHistory(settings);
+  const clipboardEntries = clipboard.textEntries;
+  const [syncedAppPreferences, setSyncedAppPreferences] = useState<AppPreference[]>(()=>load("qimiao-synced-app-preferences", []));
+  const dav = useWebDav(settings, clipboard.clips, clipboard.setClips, clipboard.ready, ()=>portableConfiguration(settings, apps));
+  function applySyncedConfiguration(config:PortableConfig) {
+    setSettings((s)=>normalizeSettings({...s,...config.settings}));
+    setApps((current)=>applyAppPreferences(current,config.apps));
+    setSyncedAppPreferences(config.apps);
+    save("qimiao-synced-app-preferences",config.apps);
+    setCategory("全部");setAppPage(0);
+    showToast(settings.language === "en" ? "Configuration restored" : "配置已恢复");
+  }
   const [commandTools, setCommandTools] = useState<CommandTool[]>(() =>
     load<CommandTool[]>("qimiao-command-tools", []),
   );
   const [page, setPage] = useState<"home" | "settings">("home");
+  const [appImporterOpen,setAppImporterOpen] = useState(false);
+  const [recentCommands,setRecentCommands] = useState<RecentCommand[]>(()=>load<RecentCommand[]>("qimiao-recent-commands",[]).filter((c)=>c&&typeof c.id==="string"&&Number.isFinite(c.at)).slice(0,10));
+  const compactLayout = page === "home" && mode === "apps" && settings.compactMode;
+  const openingRef = useRef(false);
   const [appPage, setAppPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("全部");
@@ -234,13 +263,14 @@ export default function App() {
   };
   function mergeApps(current: AppItem[], incoming: AppItem[]) {
     const merged = new Map(current.map((app) => [app.path.toLowerCase(), app]));
-    for (const app of incoming) {
+    for (const app of applyAppPreferences(incoming,syncedAppPreferences)) {
       const previous = merged.get(app.path.toLowerCase());
       merged.set(app.path.toLowerCase(), {
         ...app,
         manual: app.manual || previous?.manual || false,
         favorite: previous?.favorite ?? app.favorite,
-        category: previous?.category,
+        pinnedAt: previous ? previous.pinnedAt : app.pinnedAt,
+        category: previous ? previous.category : app.category,
         launchCount: previous?.launchCount ?? app.launchCount,
         lastUsed: previous?.lastUsed,
       });
@@ -316,10 +346,15 @@ export default function App() {
     save("float-settings", settings);
   }, [settings]);
   useEffect(() => {
-    const layout = page === "home" && mode === "apps" && settings.viewMode === "list" ? "list" : "grid";
+    document.documentElement.style.setProperty("--ui-font", fontStackFor(settings.fontFamily));
+    document.documentElement.dataset.motion = settings.motionEffects ? "full" : "reduced";
+  }, [settings.fontFamily, settings.motionEffects]);
+  useEffect(() => {
+    const layout = appImporterOpen ? "grid" : compactLayout ? "compact" : page === "home" && mode === "apps" && settings.viewMode === "list" ? "list" : "grid";
     document.documentElement.dataset.layout = layout;
     void setWindowLayout(layout).catch((error) => console.warn("调整窗口比例失败", error));
-  }, [settings.viewMode, mode, page]);
+  }, [settings.viewMode, mode, page, compactLayout, appImporterOpen]);
+  useEffect(()=>save("qimiao-recent-commands",recentCommands),[recentCommands]);
   useEffect(() => {
     document.documentElement.lang = settings.language === "en" ? "en" : "zh-CN";
     setTrayVisible(!settings.hideTray).catch(() => {});
@@ -343,30 +378,6 @@ export default function App() {
   useEffect(() => persistApps(apps), [apps]);
   useEffect(() => save("qimiao-command-tools", commandTools), [commandTools]);
   useEffect(() => {
-    if (!settings.clipboardHistoryEnabled) return;
-    let active = true;
-    const capture = async () => {
-      try {
-        const text = await clipboardText();
-        if (!active || !text.trim() || text.length > 200_000) return;
-        setClipboardEntries((current) => {
-          if (current[0] === text) return current;
-          const next = [text, ...current.filter((item) => item !== text)].slice(0, 100);
-          save("qimiao-clipboard-history", next);
-          return next;
-        });
-      } catch {
-        // Clipboard access can temporarily fail while another app owns it.
-      }
-    };
-    void capture();
-    const timer = window.setInterval(capture, 1400);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [settings.clipboardHistoryEnabled]);
-  useEffect(() => {
     if (
       !isWindows &&
       settings.autoScanApps &&
@@ -377,6 +388,8 @@ export default function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (document.querySelector(".font-dialog")) return;
+        if (document.querySelector("[data-local-dialog]")) { (document.querySelector("[data-local-dialog] .clip-close") as HTMLButtonElement | null)?.click(); return; }
         e.preventDefault();
         e.stopImmediatePropagation();
         setCategoryManager(false);
@@ -385,6 +398,7 @@ export default function App() {
         setImportReview(null);
         setClearConfirm(false);
         setPendingSystemAction(null);
+        setAppImporterOpen(false);
         setPage("home");
         setMenu(null);
         setQuery("");
@@ -398,10 +412,11 @@ export default function App() {
     const key = (event: KeyboardEvent) => {
       if (
         page !== "home" ||
-        categoryManager || pendingSystemAction || clearConfirm || aboutOpen || importReview ||
+        categoryManager || pendingSystemAction || clearConfirm || aboutOpen || importReview || appImporterOpen || compactLayout ||
         event.key !== "Tab" ||
         event.metaKey || event.ctrlKey || event.altKey ||
         event.isComposing || composingRef.current
+        || (event.target as Element)?.closest(".clipboard-workspace")
       ) return;
       event.preventDefault();
       setMode((current) => {
@@ -414,7 +429,7 @@ export default function App() {
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [page, categoryManager, pendingSystemAction, clearConfirm, aboutOpen, importReview]);
+  }, [page, categoryManager, pendingSystemAction, clearConfirm, aboutOpen, importReview, appImporterOpen, compactLayout]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -512,7 +527,7 @@ export default function App() {
       list = list.filter((app) => matchesApp(searchIndices.get(app.id) ?? [], query));
     }
     const sort = settings.sortBy;
-    return list.sort((a, b) =>
+    return list.sort((a, b) => Number(b.favorite) - Number(a.favorite) || (
       sort === "nameAsc"
         ? a.name.localeCompare(b.name)
         : sort === "nameDesc"
@@ -523,23 +538,13 @@ export default function App() {
               ? (b.installedAt ?? 0) - (a.installedAt ?? 0)
               : sort === "mostUsed"
                 ? b.launchCount - a.launchCount
-                : smartScore(b) - smartScore(a),
+                : smartScore(b) - smartScore(a)),
     );
   }, [apps, query, mode, settings.sortBy, category, searchIndices]);
-  const showRecommended =
-    settings.showRecommendations && settings.viewMode === "grid" && category === "全部" && !query && mode === "apps";
-  const libraryApps = showRecommended
-    ? visible.filter((a) => !recommended.some((r) => r.id === a.id))
-    : visible;
-  const pageSize = showRecommended ? 21 : 28,
-    pageCount =
-      settings.viewMode === "list"
-        ? 1
-        : Math.max(1, Math.ceil(libraryApps.length / pageSize));
-  const pageApps =
-    settings.viewMode === "list"
-      ? libraryApps
-      : libraryApps.slice(appPage * pageSize, (appPage + 1) * pageSize);
+  const pinnedApps = useMemo(() => apps.filter((app) => app.favorite).sort((a, b) => (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0) || a.name.localeCompare(b.name)), [apps]);
+  const { topRow, showPins, pageCount, pageApps } = appPageLayout(visible, pinnedApps, recommended, settings.viewMode,
+    settings.showRecommendations && category === "全部" && !query && mode === "apps", Boolean(query.trim()), appPage);
+  const showRecommended = topRow.length > 0;
   useEffect(() => setAppPage(0), [query, settings.viewMode]);
   useEffect(() => setSelectedSearchIndex(0), [query, category, appPage]);
   useEffect(() => {
@@ -554,15 +559,19 @@ export default function App() {
     if (appPage >= pageCount) setAppPage(pageCount - 1);
   }, [pageCount, appPage]);
   async function open(app: AppItem) {
-    setApps((x) =>
+    if(openingRef.current)return;
+    openingRef.current=true;
+    try {
+      await launchWithImmediateHide(hideLauncher,()=>launchApp(app.path));
+      setApps((x) =>
       x.map((a) =>
         a.id === app.id
           ? { ...a, launchCount: a.launchCount + 1, lastUsed: Date.now() }
           : a,
       ),
     );
-    await launchApp(app.path);
-    showToast(`正在打开 ${app.name}`);
+    } catch(error) {showToast(`${settings.language === "en" ? "Could not open app" : "打开应用失败"}：${String(error)}`);}
+    finally {openingRef.current=false;}
   }
   async function checkForUpdates(silent = false) {
     if (!silent)
@@ -624,16 +633,19 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addManualApp() {
-    const selected = await chooseApps();
-    if (!selected.length) return;
-    setImportReview({
-      title:
-        settings.language === "en"
-          ? "Review selected applications"
-          : "确认手动添加的应用",
-      apps: selected,
-      selected: selected.map((app) => app.id),
-    });
+    if(isWindows){setAppImporterOpen(true);return;}
+    try {const selected=await chooseApps();if(selected.length)addSelectedApps(selected);}catch(error){showToast(String(error));}
+  }
+  function addSelectedApps(selected:AppItem[]) {
+    setApps((current)=>mergeApps(current,selected));setAppImporterOpen(false);
+    showToast(settings.language === "en" ? `Added ${selected.length} applications` : `已添加 ${selected.length} 个应用`);
+  }
+  function activateCommon(id:CommonCommand) {
+    setRecentCommands((items)=>[{id:`common:${id}`,at:Date.now()},...items.filter((v)=>v.id!==`common:${id}`)].slice(0,10));
+    setQuery("");
+    if(id==="settings")setPage("settings");
+    else if(id==="add-app")void addManualApp();
+    else setMode(id);
   }
   async function importDesktop() {
     const selected = await desktopApps();
@@ -659,10 +671,9 @@ export default function App() {
       format: "qimiao-backup",
       version: 1,
       exportedAt: new Date().toISOString(),
-      settings: { ...settings, apiKey: "" },
+      settings: { ...settings, apiKey: "", webdav: { ...settings.webdav, username:"", url:"", clipboardEnabled:false, configurationEnabled:false, autoClipboard:false } },
       apps,
       commandTools,
-      clipboardEntries,
     };
     try {
       const path = await exportBackup(JSON.stringify(backup, null, 2));
@@ -685,11 +696,11 @@ export default function App() {
       const raw = await importBackup();
       if (!raw) return;
       const backup = parseCompatibleBackup(raw);
-      const restoredSettings: Settings = {
-        ...defaultSettings,
+      const restoredSettings: Settings = normalizeSettings({
         ...backup.settings,
         apiKey: settings.apiKey,
-      };
+        webdav: settings.webdav,
+      });
       setSettings(
         isWindows
           ? { ...restoredSettings, autoScanApps: false, scanOnLaunch: false }
@@ -708,11 +719,7 @@ export default function App() {
         ]);
       }
       if (backup.clipboardEntries?.length) {
-        const mergedClipboard = [...backup.clipboardEntries, ...clipboardEntries]
-          .filter((value, index, all) => value.trim() && all.indexOf(value) === index)
-          .slice(0, 100);
-        setClipboardEntries(mergedClipboard);
-        save("qimiao-clipboard-history", mergedClipboard);
+        clipboard.importTexts(backup.clipboardEntries);
       }
       setCategory("全部");
       setAppPage(0);
@@ -729,7 +736,7 @@ export default function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (page !== "home" || menu || categoryManager || pendingSystemAction) return;
+      if (page !== "home" || menu || categoryManager || pendingSystemAction || appImporterOpen || compactLayout) return;
       const ime =
         event.isComposing ||
         composingRef.current ||
@@ -773,10 +780,12 @@ export default function App() {
     settings.viewMode,
     actionCandidates,
     pendingSystemAction,
+    appImporterOpen,
+    compactLayout,
   ]);
   function toggleFavorite(id: string) {
     setApps((x) =>
-      x.map((a) => (a.id === id ? { ...a, favorite: !a.favorite } : a)),
+      x.map((a) => (a.id === id ? { ...a, favorite: !a.favorite, pinnedAt: a.favorite ? undefined : Date.now() } : a)),
     );
     setMenu(null);
   }
@@ -796,7 +805,16 @@ export default function App() {
     showToast(`已移动到「${folder}」`);
   }
   return (
-    <main className={`stage ${page === "home" && mode === "apps" && settings.viewMode === "list" ? "list-layout" : ""}`}>
+    <main className={`stage ${compactLayout ? "compact-layout" : page === "home" && mode === "apps" && settings.viewMode === "list" ? "list-layout" : ""}`} onMouseDown={(event) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement;
+      if (target.closest("button,input,select,textarea,a,[draggable=true],[role=dialog]")) return;
+      if (target.closest(".window-drag-region") || target.matches(".content,.launcher-shell,.launchpad-header,.library-bar,.launcher-footer,[data-window-drag]")) {
+        event.preventDefault();
+        void startWindowDrag().catch((error) => console.warn("窗口拖动失败", error));
+      }
+    }}>
+      <div className="window-drag-region" title={settings.language === "en" ? "Drag to move window" : "拖动可移动窗口"}><span /></div>
       <section className="launcher-shell">
         <div className="content">
           {availableUpdate && (
@@ -807,7 +825,15 @@ export default function App() {
               onDownload={() => void openExternalUrl(availableUpdate.url)}
             />
           )}
-          {page === "home" ? (
+          {page === "home" ? compactLayout ? (
+            <CompactLauncher apps={apps} query={query} setQuery={setQuery} en={settings.language==="en"} platform={isWindows?"windows":isMacos?"macos":"linux"} tools={commandTools} history={recentCommands} inputRef={searchRef}
+              onExpand={()=>updateSettings({compactMode:false})} onApp={(app)=>void open(app)} onCommon={activateCommon} onSystem={executeSystemAction}
+              onTool={(tool)=>{setMode("commands");setQuery(tool.title);}}
+              onCopy={(text)=>void setClipboardText(text).then(()=>showToast(settings.language==="en"?"Copied":"已复制")).catch((e)=>showToast(String(e)))}
+              imeActive={()=>composingRef.current||Date.now()-compositionEndedAt.current<140}
+              onCompositionStart={()=>{composingRef.current=true;}} onCompositionEnd={()=>{composingRef.current=false;compositionEndedAt.current=Date.now();}}
+              blocked={Boolean(pendingSystemAction||appImporterOpen||categoryManager||clearConfirm||aboutOpen||importReview)} />
+          ) : (
             <>
               <Header
                 language={settings.language}
@@ -838,6 +864,8 @@ export default function App() {
                 onSettings={() => setPage("settings")}
                 onRefresh={refresh}
                 busy={busy}
+                onCompact={()=>{updateSettings({compactMode:true});setMode("apps");setQuery("");}}
+                onAddApp={isWindows?()=>void addManualApp():undefined}
               />
               {mode === "apps" && <div className="category-nav">
                 <button
@@ -862,6 +890,7 @@ export default function App() {
                   {categories.map((c) => (
                   <button
                     key={c}
+                    aria-pressed={category === c}
                     className={category === c ? "active" : ""}
                     onClick={() => {
                       setCategory(c);
@@ -892,7 +921,9 @@ export default function App() {
                   {settings.language === "en" ? "Categories" : "管理分类"}
                 </button>
               </div>}
-              {mode === "commands" || mode === "clipboard" ? (
+              {mode === "clipboard" ? (
+                <ClipboardPane query={query} settings={settings} update={updateSettings} {...clipboard} showToast={showToast} imeActive={()=>composingRef.current || Date.now()-compositionEndedAt.current<140}/>
+              ) : mode === "commands" ? (
                 <CommandCenter
                   mode={mode}
                   query={query}
@@ -911,7 +942,7 @@ export default function App() {
               ) : (
                 <>
                   <section
-                    className={`library launchpad ${showRecommended ? "has-recommend" : ""}`}
+                    className={`library launchpad ${showRecommended ? "has-recommend" : ""} ${showPins ? "has-pins" : ""}`}
                     onWheel={(e) => {
                       wheelDelta.current +=
                         Math.abs(e.deltaX) > Math.abs(e.deltaY)
@@ -935,14 +966,17 @@ export default function App() {
                     }}
                   >
                     <div className="library-bar">
-                      <span>
+                      <span className="library-caption">
                         {query
                           ? settings.language === "en" ? `${visible.length + actionCandidates.length} results` : `${visible.length + actionCandidates.length} 个结果`
-                          : showRecommended
-                            ? "智能推荐 · 近期、常用与新安装"
-                            : "所有应用"}
+                          : showPins ? settings.language === "en" ? "Pinned apps" : "收藏置顶" : showRecommended
+                            ? settings.language === "en" ? "For you" : "为你推荐"
+                            : category !== "全部" ? category : settings.language === "en" ? "Your apps" : "我的应用"}
+                        {!query && <small>{settings.language === "en" ? `${visible.length} apps` : `${visible.length} 个应用`}</small>}
                       </span>
                       <div className="library-controls">
+                        <label className="sort-control">
+                        <ArrowUpDown aria-hidden="true" />
                         <select
                           aria-label={
                             settings.language === "en"
@@ -975,6 +1009,8 @@ export default function App() {
                             {settings.language === "en" ? "Most used" : "最常使用"}
                           </option>
                         </select>
+                        <ChevronDown aria-hidden="true" />
+                        </label>
                         <div className="view-switch">
                           <button
                             aria-label={settings.language === "en" ? "Grid view" : "图标模式"}
@@ -1014,11 +1050,15 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                    {visible.length ? (
+                    {visible.length || topRow.length ? (
                       <>
                         {showRecommended && (
-                          <div className="recommend-grid">
-                            {recommended.map((a) => (
+                          <div className={`recommend-grid ${showPins ? "pinned-grid" : ""}`} aria-label={showPins ? settings.language === "en" ? "Pinned apps on every page" : "每页固定显示的收藏应用" : undefined} onWheel={(event) => {
+                            if (!showPins) return;
+                            event.stopPropagation();
+                            event.currentTarget.scrollLeft += Math.abs(event.deltaY) > Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+                          }}>
+                            {topRow.map((a) => (
                               <AppCard
                                 key={a.id}
                                 app={a}
@@ -1032,13 +1072,14 @@ export default function App() {
                           </div>
                         )}
                         <div
-                          key={appPage}
+                          key={`${appPage}-${category}-${settings.viewMode}`}
                           className={`${settings.viewMode} app-library page-enter`}
                         >
                           {pageApps.map((a, index) => (
                             <AppCard
                               key={a.id}
                               app={a}
+                              order={index}
                               language={settings.language}
                               selected={
                                 Boolean(query.trim()) &&
@@ -1051,6 +1092,8 @@ export default function App() {
                           ))}
                         </div>
                         {settings.viewMode === "grid" && (
+                          <div className="launcher-footer">
+                          <span className="keyboard-guide"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd><span>{settings.language === "en" ? "Navigate" : "选择"}</span><kbd>↵</kbd><span>{settings.language === "en" ? "Open" : "打开"}</span></span>
                           <div className="pagination">
                             <button
                               disabled={appPage === 0}
@@ -1072,6 +1115,8 @@ export default function App() {
                             >
                               <ChevronRight />
                             </button>
+                          </div>
+                          <span className="footer-escape"><kbd>esc</kbd>{settings.language === "en" ? "Hide" : "收起"}</span>
                           </div>
                         )}
                       </>
@@ -1103,11 +1148,13 @@ export default function App() {
                 onAbout={() => setAboutOpen(true)}
                 onExportBackup={() => void exportConfiguration()}
                 onImportBackup={() => void importConfiguration()}
+                syncPanel={<WebDavPanel settings={settings} update={updateSettings} controller={dav} applyConfiguration={applySyncedConfiguration}/>}
               />
             </>
           )}
         </div>
       </section>
+      {appImporterOpen&&<AppImporter apps={apps} en={settings.language==="en"} onAdd={addSelectedApps} onClose={()=>setAppImporterOpen(false)}/>}
       {menu && (
         <ContextMenu
           app={apps.find((a) => a.id === menu.id)!}
@@ -1240,6 +1287,8 @@ function Header({
   onSettings,
   onRefresh,
   busy,
+  onCompact,
+  onAddApp,
 }: {
   language: Settings["language"];
   query: string;
@@ -1255,6 +1304,8 @@ function Header({
   onSettings: () => void;
   onRefresh: () => void;
   busy: boolean;
+  onCompact:()=>void;
+  onAddApp?:()=>void;
 }) {
   const en = language === "en";
   const placeholder = mode === "apps"
@@ -1274,6 +1325,7 @@ function Header({
       <div className="search-wrap">
         <Search />
         <input
+          aria-label={placeholder}
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -1282,11 +1334,11 @@ function Header({
           placeholder={placeholder}
         />
         {query && (
-          <button onClick={() => setQuery("")}>
+          <button aria-label={en ? "Clear search" : "清除搜索"} onClick={() => { setQuery(""); inputRef.current?.focus(); }}>
             <X />
           </button>
         )}
-        <kbd>⌥ Space</kbd>
+        <span className="search-mode-label" aria-hidden="true">{mode === "apps" ? en ? "APPS" : "应用" : mode === "commands" ? en ? "CMD" : "命令" : mode === "clipboard" ? en ? "CLIP" : "剪贴板" : "AI"}</span>
       </div>
       <div className="header-actions">
         <div className="mode-switch">
@@ -1321,6 +1373,9 @@ function Header({
             AI
           </button>
         </div>
+        <span className="toolbar-divider" aria-hidden="true" />
+        {onAddApp&&<button className="icon-btn add-app-action" title={en?"Add applications":"添加应用"} aria-label={en?"Add applications":"添加应用"} onClick={onAddApp}><Plus/></button>}
+        <button className="icon-btn collapse-toggle" title={en?"Compact mode":"简洁模式"} aria-label={en?"Compact mode":"简洁模式"} onClick={onCompact}><PanelTopClose/></button>
         <button
           className="icon-btn"
           title={en ? `Theme: ${theme}${theme === "system" ? systemDark ? " (dark)" : " (light)" : ""}` : `主题：${theme === "system" ? `跟随系统（${systemDark ? "深色" : "浅色"}）` : theme === "dark" ? "深色" : "浅色"}`}
@@ -1376,6 +1431,7 @@ function AppCard({
   language,
   compact,
   selected,
+  order = 0,
   onOpen,
   onMenu,
   onGroup,
@@ -1384,6 +1440,7 @@ function AppCard({
   language: Settings["language"];
   compact?: boolean;
   selected?: boolean;
+  order?: number;
   onOpen: (a: AppItem) => void;
   onMenu: (id: string, x: number, y: number) => void;
   onGroup: (source: string, target: string) => void;
@@ -1434,6 +1491,7 @@ function AppCard({
     <button
       draggable
       className={`app-card ${compact ? "compact" : ""} ${selected ? "keyboard-selected" : ""}`}
+      style={{ "--item-order": Math.min(order, 13) } as React.CSSProperties}
       aria-selected={selected || undefined}
       onDragStart={(e) => {
         e.dataTransfer.setData("text/miaoqi-app", app.id);
@@ -1451,7 +1509,6 @@ function AppCard({
         e.currentTarget.classList.remove("drop-target");
         onGroup(e.dataTransfer.getData("text/miaoqi-app"), app.id);
       }}
-      onDoubleClick={() => onOpen(app)}
       onClick={() => onOpen(app)}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -1793,6 +1850,7 @@ function SettingsPage({
   onAbout,
   onExportBackup,
   onImportBackup,
+  syncPanel,
 }: {
   settings: Settings;
   update: (p: Partial<Settings>) => void;
@@ -1804,6 +1862,7 @@ function SettingsPage({
   onAbout: () => void;
   onExportBackup: () => void;
   onImportBackup: () => void;
+  syncPanel: React.ReactNode;
 }) {
   const en = settings.language === "en";
   async function addDir() {
@@ -1846,6 +1905,7 @@ function SettingsPage({
         </div>
       </SettingSection>
       <SettingSection icon={<Palette />} title={en ? "Appearance" : "外观"}>
+        <div className="appearance-intro"><span><Palette /></span><div><strong>{en ? "A space that feels like you." : "让每一次打开，都顺眼。"}</strong><p>{en ? "Fine-tune the material, type and motion." : "调整材质、字体和动效，找到舒服的使用方式。"}</p></div></div>
         <div className="setting-row">
           <div>
             <strong>{en ? "Color mode" : "显示模式"}</strong>
@@ -1888,6 +1948,12 @@ function SettingsPage({
             onChange={(v) => update({ material: v as Settings["material"] })}
           />
         </div>
+        <div className="setting-row">
+          <div><strong>{en ? "Interface font" : "界面字体"}</strong><span>{en ? "Choose from fonts installed on this device" : "调用本地字体，即时预览，自动保存"}</span></div>
+          <FontPicker value={settings.fontFamily} onChange={(fontFamily) => update({ fontFamily })} en={en} />
+        </div>
+        <ToggleRow title={en ? "Interface animations" : "界面动效"} desc={en ? "Fluid transitions and tactile feedback. Respects reduced motion." : "流畅的切换和轻弹性反馈，自动尊重系统减少动态效果设置"} checked={settings.motionEffects} onChange={(motionEffects) => update({ motionEffects })} />
+        <ToggleRow title={en?"Compact launcher":"简洁模式"} desc={en?"A smaller search palette with recent history and common commands. Expand any time.":"只保留搜索、最近打开和常用命令，随时展开为应用网格"} checked={settings.compactMode} onChange={(compactMode)=>update({compactMode})}/>
         <ToggleRow
           title={en ? "Show recommendations" : "显示推荐应用"}
           desc={
@@ -1945,7 +2011,7 @@ function SettingsPage({
             />
           </>
         )}
-        <div className="setting-row">
+        {isWindows ? <><div className="windows-app-manager"><AppWindow/><div><strong>{en?"Your application library":"管理应用库"}</strong><p>{en?"Choose from Desktop, Start menu, a folder or program files. Only checked apps will be imported.":"桌面、开始菜单、指定文件夹或程序文件，统一在一个窗口内选择添加。"}</p></div><button className="primary" onClick={onAddApp}><Plus/>{en?"Add applications":"添加应用"}</button></div><div className="windows-app-manager-footer"><small>{en?"Manual management only. No startup scanning.":"Windows 仅手动管理，不会开机扫描或自动加入应用。"}</small><button onClick={onClearApps}>{en?"Clear application library…":"清空应用库…"}</button></div></> : <div className="setting-row">
           <div>
             <strong>{en ? "Manual application list" : "手动管理应用"}</strong>
             <span>
@@ -1973,7 +2039,7 @@ function SettingsPage({
               {en ? "Clear list" : "清空列表"}
             </button>
           </div>
-        </div>
+        </div>}
         {!isWindows && (
           <div className="setting-row column">
             <div>
@@ -2036,8 +2102,8 @@ function SettingsPage({
           title={en ? "Clipboard history" : "剪贴板历史"}
           desc={
             en
-              ? "Keep up to 100 recent text entries on this device"
-              : "在本机保留最近 100 条文本记录"
+              ? "Capture text, HTML, images and files locally. Manage privacy and retention in Clipboard."
+              : "在本机记录文本、富文本、图片与文件；隐私、过滤和保留规则可在剪贴板中设置"
           }
           checked={settings.clipboardHistoryEnabled}
           onChange={(clipboardHistoryEnabled) => update({ clipboardHistoryEnabled })}
@@ -2199,6 +2265,7 @@ function SettingsPage({
           </div>
         </div>
       </SettingSection>
+      {syncPanel}
     </div>
   );
 }
@@ -2250,6 +2317,9 @@ function ToggleRow({
       </div>
       <button
         className={`toggle ${checked ? "on" : ""}`}
+        role="switch"
+        aria-label={title}
+        aria-checked={checked}
         onClick={() => onChange(!checked)}
       >
         <i />
@@ -2272,6 +2342,7 @@ function Segment({
         <button
           key={o[0] as string}
           className={value === o[0] ? "active" : ""}
+          aria-pressed={value === o[0]}
           onClick={() => onChange(o[0] as string)}
         >
           {o[2]}
@@ -3009,6 +3080,7 @@ function AboutDialog({
             ? "Licensed under GNU AGPL v3 or later. Source code and modification notices are available on GitHub. No warranty."
             : "本软件按 GNU AGPL 第 3 版或更高版本授权。源代码与修改声明可在 GitHub 获取，不提供任何担保。"}
         </p>
+        <p className="about-license">{en ? "Includes TinyCast (AGPLv3+) and PasteMemo (GPLv3) adaptations. © 2026 Abue Ammar / lifedever." : "部分功能移植自 TinyCast（AGPLv3+）及 PasteMemo（GPLv3）。© 2026 Abue Ammar / lifedever。"}</p>
       </section>
     </>
   );

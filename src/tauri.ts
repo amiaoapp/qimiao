@@ -1,5 +1,71 @@
 import type { AppItem } from "./types";
+import type { Clip } from "./clipboard-core";
+import type { DavOptions } from "./types";
 const isTauri = () => "__TAURI_INTERNALS__" in window;
+async function desktopInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
+}
+export async function clipboardSnapshot(ignoredApps: string[]): Promise<Clip | null> {
+  return isTauri() ? desktopInvoke("clipboard_snapshot", { ignoredApps }) : null;
+}
+export async function loadClipHistory(): Promise<unknown> {
+  return isTauri() ? desktopInvoke("load_clipboard_history") : JSON.parse(localStorage.getItem("qimiao-clips-v2") ?? "[]");
+}
+export async function saveClipHistory(entries: Clip[]) {
+  if (isTauri()) await desktopInvoke("save_clipboard_history", { entries });
+  else localStorage.setItem("qimiao-clips-v2", JSON.stringify(entries));
+}
+export async function copyClip(clip: Clip, plain = false, paste = false, pressEnter = false) {
+  if (isTauri()) await desktopInvoke(paste ? "paste_clipboard_item" : "copy_clipboard_item", { clip, plain, ...(paste ? { pressEnter } : {}) });
+  else if (navigator.clipboard) await navigator.clipboard.writeText(clip.text);
+}
+export async function exportClip(clip: Clip): Promise<string | null> {
+  if (isTauri()) return desktopInvoke("export_clipboard_item", { clip });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(new Blob([clip.text], { type:"text/plain" })); anchor.download = "clipboard.txt"; anchor.click();
+  URL.revokeObjectURL(anchor.href); return "clipboard.txt";
+}
+export type RemoteDavFile = { data: string; etag: string | null; modified: string | null };
+const davConfig = (config: DavOptions) => ({ url:config.url, username:config.username, allowInsecure:config.allowInsecure });
+export async function connectDav(config: DavOptions, password: string) {
+  if (!isTauri()) throw new Error("WebDAV 连接请在桌面版中使用 / Use the desktop app");
+  await desktopInvoke("webdav_connect", { config:davConfig(config), password, remember:config.remember });
+}
+export async function forgetDav(config: DavOptions) {
+  if (isTauri()) await desktopInvoke("webdav_forget", { config:davConfig(config) });
+}
+export async function readDav(config: DavOptions, kind: "clipboard" | "configuration"): Promise<RemoteDavFile | null> {
+  if (!isTauri()) throw new Error("WebDAV 同步请在桌面版中使用 / Use the desktop app");
+  return desktopInvoke("webdav_read", { config:davConfig(config), kind });
+}
+export async function writeDav(config: DavOptions, kind: "clipboard" | "configuration", data: string, remote: RemoteDavFile | null) {
+  if (!isTauri()) throw new Error("Use the desktop app");
+  await desktopInvoke("webdav_write", { config:davConfig(config), kind, data, etag:remote?.etag ?? null, modified:remote?.modified ?? null, exists:remote !== null });
+}
+export async function syncDavImage(config: DavOptions, key: string, upload: boolean) {
+  if (isTauri()) await desktopInvoke("webdav_image", { config:davConfig(config), key, upload });
+}
+let fontCatalog: Promise<string[]> | undefined;
+export function listLocalFonts(refresh = false): Promise<string[]> {
+  if (refresh) fontCatalog = undefined;
+  return fontCatalog ??= (async () => {
+    if (isTauri()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("list_local_fonts");
+    }
+    // Browser preview can verify known local families; desktop enumerates the full OS catalog.
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return [];
+    const sample = "Qimiao 启喵 0123";
+    context.font = "16px monospace";
+    const baseline = context.measureText(sample).width;
+    return ["Arial", "Avenir Next", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Segoe UI", "Georgia", "Times New Roman", "Menlo", "SF Pro Display", "Noto Sans CJK SC"].filter((name) => {
+      context.font = `16px ${JSON.stringify(name)}, monospace`;
+      return Math.abs(context.measureText(sample).width - baseline) > .1;
+    }).sort((a, b) => a.localeCompare(b));
+  })().catch((error) => { fontCatalog = undefined; throw error; });
+}
 export async function scanApps(extra: string[]): Promise<AppItem[]> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -33,6 +99,9 @@ export async function desktopApps(): Promise<AppItem[]> {
     return invoke("desktop_apps");
   }
   return [];
+}
+export async function manualAppCandidates(source:"desktop"|"start-menu"|"folder"):Promise<AppItem[]> {
+  return isTauri() ? desktopInvoke("manual_app_candidates",{source}) : [];
 }
 export async function existingAppPaths(paths: string[]): Promise<string[]> {
   if (isTauri()) {
@@ -135,10 +204,16 @@ export async function setWindowMaterial(material: string, dark: boolean, followS
     await invoke("set_window_material", { material, dark, followSystem });
   }
 }
-export async function setWindowLayout(layout: "grid" | "list") {
+export async function setWindowLayout(layout: "grid" | "list" | "compact") {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("set_window_layout", { layout });
+  }
+}
+export async function startWindowDrag() {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("start_launcher_drag");
   }
 }
 export type FileSearchResult = {

@@ -4,9 +4,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -21,6 +20,9 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt as AutoStartManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use walkdir::WalkDir;
+mod clipboard;
+mod fonts;
+mod webdav;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -305,12 +307,37 @@ fn normalize_rgba_icon(source: image::RgbaImage) -> image::RgbaImage {
 // Windows applications ship arbitrary silhouettes and transparent padding.
 // Give all of them one optical size inside the same rounded system tile.
 #[cfg(any(target_os = "windows", test))]
-fn normalize_windows_icon(source: image::RgbaImage) -> image::RgbaImage {
+fn windows_icon_bounds(source: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = source.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    // Some PE/shortcut icons contain an opaque neutral canvas, others a faint
+    // full-size shadow. Neither should determine the visible glyph's size.
+    let corners = [
+        source.get_pixel(0, 0),
+        source.get_pixel(w - 1, 0),
+        source.get_pixel(0, h - 1),
+        source.get_pixel(w - 1, h - 1),
+    ];
+    let neutral_canvas = corners.iter().all(|p| {
+        p[3] > 240
+            && p[0] > 224
+            && p[1] > 224
+            && p[2] > 224
+            && p[0].abs_diff(p[1]) < 16
+            && p[1].abs_diff(p[2]) < 16
+    });
     let mut bounds = (w, h, 0, 0);
     let mut found = false;
     for (x, y, pixel) in source.enumerate_pixels() {
-        if pixel[3] >= 48 {
+        let background = neutral_canvas
+            && pixel[0] > 224
+            && pixel[1] > 224
+            && pixel[2] > 224
+            && pixel[0].abs_diff(pixel[1]) < 16
+            && pixel[1].abs_diff(pixel[2]) < 16;
+        if pixel[3] >= 96 && !background {
             found = true;
             bounds.0 = bounds.0.min(x);
             bounds.1 = bounds.1.min(y);
@@ -318,6 +345,23 @@ fn normalize_windows_icon(source: image::RgbaImage) -> image::RgbaImage {
             bounds.3 = bounds.3.max(y);
         }
     }
+    if !found {
+        return None;
+    }
+    if neutral_canvas {
+        let padding = ((bounds.2 - bounds.0 + 1).max(bounds.3 - bounds.1 + 1) / 16).max(1);
+        bounds = (
+            bounds.0.saturating_sub(padding),
+            bounds.1.saturating_sub(padding),
+            (bounds.2 + padding).min(w - 1),
+            (bounds.3 + padding).min(h - 1),
+        );
+    }
+    Some(bounds)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn normalize_windows_icon(source: image::RgbaImage) -> image::RgbaImage {
     let mut canvas = image::RgbaImage::new(160, 160);
     // Signed-distance coverage keeps corners smooth at both 1x and 2x.
     for (x, y, pixel) in canvas.enumerate_pixels_mut() {
@@ -327,14 +371,25 @@ fn normalize_windows_icon(source: image::RgbaImage) -> image::RgbaImage {
         let tone = (251.0 - y as f32 / 160.0 * 13.0).round() as u8;
         *pixel = image::Rgba([tone, tone, tone.saturating_add(2), alpha]);
     }
-    if found {
-        let crop = image::imageops::crop_imm(&source, bounds.0, bounds.1,
-            bounds.2 - bounds.0 + 1, bounds.3 - bounds.1 + 1).to_image();
-        let scale = 112.0 / crop.width().max(crop.height()) as f32;
+    if let Some(bounds) = windows_icon_bounds(&source) {
+        let crop = image::imageops::crop_imm(
+            &source,
+            bounds.0,
+            bounds.1,
+            bounds.2 - bounds.0 + 1,
+            bounds.3 - bounds.1 + 1,
+        )
+        .to_image();
+        let scale = 132.0 / crop.width().max(crop.height()) as f32;
         let nw = (crop.width() as f32 * scale).round().max(1.0) as u32;
         let nh = (crop.height() as f32 * scale).round().max(1.0) as u32;
         let resized = image::imageops::resize(&crop, nw, nh, image::imageops::FilterType::Lanczos3);
-        image::imageops::overlay(&mut canvas, &resized, ((160 - nw) / 2) as i64, ((160 - nh) / 2) as i64);
+        image::imageops::overlay(
+            &mut canvas,
+            &resized,
+            ((160 - nw) / 2) as i64,
+            ((160 - nh) / 2) as i64,
+        );
     }
     canvas
 }
@@ -529,7 +584,7 @@ fn app_icon(path: &Path, name: &str) -> String {
         "{:x}",
         Sha256::digest(
             format!(
-                "windows-icon-system-tile-v4:{}:{}:{}",
+                "windows-icon-actual-bitmap-v5:{}:{}:{}",
                 path.to_string_lossy(),
                 metadata
                     .as_ref()
@@ -557,7 +612,8 @@ fn app_icon(path: &Path, name: &str) -> String {
 #[cfg(target_os = "windows")]
 fn windows_shell_icon(path: &Path) -> Option<image::RgbaImage> {
     let visible = |icon: &image::RgbaImage| icon.pixels().any(|pixel| pixel[3] >= 48);
-    windows_shell_thumbnail(path).filter(visible)
+    windows_shell_thumbnail(path)
+        .filter(visible)
         .or_else(|| windows_legacy_shell_icon(path).filter(visible))
 }
 
@@ -569,11 +625,14 @@ fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
         Win32::{
             Foundation::SIZE,
             Graphics::Gdi::{
-                CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BI_RGB,
-                DIB_RGB_COLORS, HGDIOBJ,
+                CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP,
+                BITMAPINFO, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
             },
             System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
-            UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY},
+            UI::Shell::{
+                IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+                SIIGBF_ICONONLY,
+            },
         },
     };
 
@@ -585,20 +644,37 @@ fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
         const SIDE: i32 = 160;
         let bitmap = unsafe {
             factory
-                .GetImage(SIZE { cx: SIDE, cy: SIDE }, SIIGBF_ICONONLY)
+                .GetImage(
+                    SIZE { cx: SIDE, cy: SIDE },
+                    SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+                )
                 .ok()?
         };
         if bitmap.0.is_null() {
             return None;
         }
+        let mut actual = BITMAP::default();
+        let queried = unsafe {
+            GetObjectW(
+                HGDIOBJ(bitmap.0),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some((&mut actual as *mut BITMAP).cast()),
+            )
+        };
+        let width = actual.bmWidth;
+        let height = actual.bmHeight.unsigned_abs();
+        if queried == 0 || width <= 0 || height == 0 || width > 4096 || height > 4096 {
+            let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+            return None;
+        }
         let mut bitmap_info = BITMAPINFO::default();
         bitmap_info.bmiHeader.biSize = std::mem::size_of_val(&bitmap_info.bmiHeader) as u32;
-        bitmap_info.bmiHeader.biWidth = SIDE;
-        bitmap_info.bmiHeader.biHeight = -SIDE;
+        bitmap_info.bmiHeader.biWidth = width;
+        bitmap_info.bmiHeader.biHeight = -(height as i32);
         bitmap_info.bmiHeader.biPlanes = 1;
         bitmap_info.bmiHeader.biBitCount = 32;
         bitmap_info.bmiHeader.biCompression = BI_RGB.0;
-        let mut bgra = vec![0u8; (SIDE * SIDE * 4) as usize];
+        let mut bgra = vec![0u8; width as usize * height as usize * 4];
         let dc = unsafe { CreateCompatibleDC(None) };
         let copied = if dc.0.is_null() {
             0
@@ -608,7 +684,7 @@ fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
                     dc,
                     bitmap,
                     0,
-                    SIDE as u32,
+                    height,
                     Some(bgra.as_mut_ptr().cast()),
                     &mut bitmap_info,
                     DIB_RGB_COLORS,
@@ -619,7 +695,7 @@ fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
             let _ = unsafe { DeleteDC(dc) };
         }
         let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-        if copied == 0 {
+        if copied != height as i32 {
             return None;
         }
         let has_alpha = bgra.chunks_exact(4).any(|pixel| pixel[3] != 0);
@@ -646,7 +722,7 @@ fn windows_shell_thumbnail(path: &Path) -> Option<image::RgbaImage> {
                 alpha,
             ]);
         }
-        image::RgbaImage::from_raw(SIDE as u32, SIDE as u32, rgba)
+        image::RgbaImage::from_raw(width as u32, height, rgba)
     })();
     if initialized {
         unsafe { CoUninitialize() };
@@ -716,6 +792,9 @@ fn windows_legacy_shell_icon(path: &Path) -> Option<image::RgbaImage> {
         return None;
     }
     let old = unsafe { SelectObject(dc, bitmap) };
+    unsafe {
+        std::ptr::write_bytes(pixels.cast::<u8>(), 0, (SIDE * SIDE * 4) as usize);
+    }
     let drawn = unsafe {
         DrawIconEx(
             dc,
@@ -868,9 +947,14 @@ fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
     }
     let display_name = localized_app_name(path, &raw);
     let app_category = plist::Value::from_file(path.join("Contents/Info.plist"))
-        .ok().and_then(|value| value.into_dictionary())
-        .and_then(|dictionary| dictionary.get("LSApplicationCategoryType")
-            .and_then(|value| value.as_string()).map(str::to_owned));
+        .ok()
+        .and_then(|value| value.into_dictionary())
+        .and_then(|dictionary| {
+            dictionary
+                .get("LSApplicationCategoryType")
+                .and_then(|value| value.as_string())
+                .map(str::to_owned)
+        });
     let canonical = path.to_string_lossy().to_string();
     let id = format!("{:x}", Sha256::digest(canonical.as_bytes()));
     let installed_at = fs::metadata(path)
@@ -911,7 +995,20 @@ fn existing_app_paths(paths: Vec<String>) -> Vec<String> {
 }
 
 #[tauri::command]
-fn launch_app(path: String) -> Result<(), String> {
+async fn launch_app(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || launch_path(path))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    if result.is_err() {
+        show_launcher(&app);
+    }
+    result
+}
+
+fn launch_path(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = Command::new("open");
@@ -921,7 +1018,11 @@ fn launch_app(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::{os::windows::ffi::OsStrExt, ptr};
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
         use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
         let wide: Vec<u16> = std::ffi::OsStr::new(&path)
             .encode_wide()
             .chain(Some(0))
@@ -936,6 +1037,9 @@ fn launch_app(path: String) -> Result<(), String> {
                 SW_SHOWNORMAL,
             )
         } as isize;
+        if initialized {
+            unsafe { CoUninitialize() };
+        }
         return if result > 32 {
             Ok(())
         } else {
@@ -977,7 +1081,9 @@ fn export_backup(
         .save_file();
     state.native_dialog_open.store(false, Ordering::SeqCst);
     state.protect_focus(Duration::from_millis(900));
-    let Some(path) = selected else { return Ok(None) };
+    let Some(path) = selected else {
+        return Ok(None);
+    };
     fs::write(&path, contents).map_err(|error| error.to_string())?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
@@ -1022,12 +1128,18 @@ fn read_tinycast_archive(path: &Path) -> Result<String, String> {
         .args(["-d"])
         .arg(&staging)
         .args([
-            "-include-path", "manifest.json",
-            "-include-path", "settings.json",
-            "-include-path", "snippets",
-            "-include-path", "notes",
-            "-include-path", "clipboard/items.jsonl",
-            "-exclude-type", "l",
+            "-include-path",
+            "manifest.json",
+            "-include-path",
+            "settings.json",
+            "-include-path",
+            "snippets",
+            "-include-path",
+            "notes",
+            "-include-path",
+            "clipboard/items.jsonl",
+            "-exclude-type",
+            "l",
         ])
         .status()
         .map_err(|error| error.to_string())?;
@@ -1040,7 +1152,8 @@ fn read_tinycast_archive(path: &Path) -> Result<String, String> {
         let settings: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(&settings_path)
                 .map_err(|_| "TinyCast archive has no readable settings.json")?,
-        ).map_err(|error| format!("TinyCast settings are invalid: {error}"))?;
+        )
+        .map_err(|error| format!("TinyCast settings are invalid: {error}"))?;
         let snippets = read_tinycast_markdown(&staging.join("snippets"), true)?;
         let notes = read_tinycast_markdown(&staging.join("notes"), false)?;
         let clipboard_entries = read_tinycast_clipboard(&staging.join("clipboard/items.jsonl"))?;
@@ -1050,7 +1163,8 @@ fn read_tinycast_archive(path: &Path) -> Result<String, String> {
             "snippets": snippets,
             "notes": notes,
             "clipboardEntries": clipboard_entries,
-        })).map_err(|error| error.to_string())
+        }))
+        .map_err(|error| error.to_string())
     })();
     let _ = fs::remove_dir_all(&staging);
     result
@@ -1059,17 +1173,39 @@ fn read_tinycast_archive(path: &Path) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 fn validate_tinycast_archive(path: &Path) -> Result<(), String> {
     let output = Command::new("/usr/bin/aa")
-        .args(["list", "-i"]).arg(path).args(["-list-format", "json"])
-        .output().map_err(|error| error.to_string())?;
-    if !output.status.success() { return Err("TinyCast archive cannot be listed".into()); }
+        .args(["list", "-i"])
+        .arg(path)
+        .args(["-list-format", "json"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("TinyCast archive cannot be listed".into());
+    }
     let entries: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("TinyCast archive index is invalid: {error}"))?;
     for entry in entries {
-        let kind = entry.get("TYP").and_then(|value| value.as_str()).unwrap_or("");
-        let path = entry.get("PAT").and_then(|value| value.as_str()).unwrap_or("");
-        if !matches!(kind, "F" | "D") { return Err("TinyCast archive contains an unsupported link or special entry".into()); }
+        let kind = entry
+            .get("TYP")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let path = entry
+            .get("PAT")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !matches!(kind, "F" | "D") {
+            return Err("TinyCast archive contains an unsupported link or special entry".into());
+        }
         let candidate = Path::new(path);
-        if candidate.is_absolute() || candidate.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        if candidate.is_absolute()
+            || candidate.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
             return Err("TinyCast archive contains an unsafe path".into());
         }
     }
@@ -1078,28 +1214,47 @@ fn validate_tinycast_archive(path: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn read_tinycast_clipboard(path: &Path) -> Result<Vec<String>, String> {
-    if !path.is_file() { return Ok(Vec::new()); }
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
     let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    Ok(source.lines().filter_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        if value.get("kind")?.as_str()? != "text" { return None; }
-        value.get("text")?.as_str().filter(|text| !text.is_empty()).map(str::to_string)
-    }).take(100).collect())
+    Ok(source
+        .lines()
+        .filter_map(|line| {
+            let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+            if value.get("kind")?.as_str()? != "text" {
+                return None;
+            }
+            value
+                .get("text")?
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+        .take(100)
+        .collect())
 }
 
 #[cfg(target_os = "macos")]
 fn read_tinycast_markdown(dir: &Path, snippets: bool) -> Result<Vec<serde_json::Value>, String> {
-    if !dir.is_dir() { return Ok(Vec::new()); }
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
     let mut values = Vec::new();
     for entry in fs::read_dir(dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_file() || path.extension().and_then(|value| value.to_str()) != Some("md") {
+        if !metadata.file_type().is_file()
+            || path.extension().and_then(|value| value.to_str()) != Some("md")
+        {
             continue;
         }
         let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let fallback = path.file_stem().and_then(|value| value.to_str()).unwrap_or("Untitled")
+        let fallback = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Untitled")
             .replace('-', " ");
         if snippets {
             let (meta, text) = parse_tinycast_snippet(&source);
@@ -1124,12 +1279,18 @@ fn parse_tinycast_snippet(source: &str) -> (serde_json::Map<String, serde_json::
     if lines.next().map(|line| line.trim_end_matches(['\r', '\n'])) != Some("---") {
         return (metadata, source.to_string());
     }
-    let mut consumed = source.find('\n').map(|index| index + 1).unwrap_or(source.len());
+    let mut consumed = source
+        .find('\n')
+        .map(|index| index + 1)
+        .unwrap_or(source.len());
     let mut found_end = false;
     for line in lines {
         consumed += line.len();
         let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed == "---" { found_end = true; break; }
+        if trimmed == "---" {
+            found_end = true;
+            break;
+        }
         if let Some((key, raw)) = trimmed.split_once(':') {
             let key = key.trim();
             let raw = raw.trim();
@@ -1144,7 +1305,11 @@ fn parse_tinycast_snippet(source: &str) -> (serde_json::Map<String, serde_json::
             }
         }
     }
-    if found_end { (metadata, source[consumed..].to_string()) } else { (serde_json::Map::new(), source.to_string()) }
+    if found_end {
+        (metadata, source[consumed..].to_string())
+    } else {
+        (serde_json::Map::new(), source.to_string())
+    }
 }
 
 #[tauri::command]
@@ -1178,7 +1343,7 @@ fn choose_apps(state: tauri::State<WindowRuntime>) -> Vec<AppItem> {
 fn desktop_apps() -> Vec<AppItem> {
     #[cfg(target_os = "windows")]
     {
-        let mut roots = Vec::new();
+        let mut roots = windows_known_import_roots("desktop");
         if let Some(profile) = std::env::var_os("USERPROFILE") {
             let profile = PathBuf::from(profile);
             roots.push(profile.join("Desktop"));
@@ -1207,6 +1372,88 @@ fn desktop_apps() -> Vec<AppItem> {
     Vec::new()
 }
 
+#[cfg(target_os = "windows")]
+fn windows_known_import_roots(source: &str) -> Vec<PathBuf> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{
+            FOLDERID_CommonStartMenu, FOLDERID_Desktop, FOLDERID_PublicDesktop, FOLDERID_StartMenu,
+            SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        },
+    };
+    let ids = if source == "desktop" {
+        [FOLDERID_Desktop, FOLDERID_PublicDesktop]
+    } else {
+        [FOLDERID_StartMenu, FOLDERID_CommonStartMenu]
+    };
+    ids.iter()
+        .filter_map(|id| unsafe {
+            let value = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
+            let path = value.to_string().ok().map(PathBuf::from);
+            CoTaskMemFree(Some(value.0.cast()));
+            path
+        })
+        .collect()
+}
+
+// Explicitly requested catalog only. This never runs on startup or adds items
+// automatically; the UI requires a checked selection before committing.
+#[tauri::command]
+async fn manual_app_candidates(
+    app: tauri::AppHandle,
+    source: String,
+) -> Result<Vec<AppItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let roots = match source.as_str() {
+            "folder" => {
+                let state = app.state::<WindowRuntime>();
+                state.native_dialog_open.store(true, Ordering::SeqCst);
+                let selected = rfd::FileDialog::new().pick_folder();
+                state.native_dialog_open.store(false, Ordering::SeqCst);
+                state.protect_focus(Duration::from_millis(800));
+                selected.into_iter().collect::<Vec<_>>()
+            }
+            #[cfg(target_os = "windows")]
+            "desktop" | "start-menu" => windows_known_import_roots(&source),
+            _ => return Err("未知的手动导入来源".into()),
+        };
+        let mut seen = HashSet::new();
+        let mut items = Vec::new();
+        for root in roots {
+            for entry in WalkDir::new(root)
+                .max_depth(4)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                let path = entry.path();
+                if !is_app(path) {
+                    continue;
+                }
+                #[cfg(target_os = "windows")]
+                if looks_like_windows_non_app(path) {
+                    continue;
+                }
+                if let Some(item) = app_item_from_path(path, true) {
+                    if seen.insert(item.path.to_lowercase()) {
+                        items.push(item);
+                    }
+                }
+                if items.len() >= 2000 {
+                    break;
+                }
+            }
+            if items.len() >= 2000 {
+                break;
+            }
+        }
+        items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 #[cfg(any())]
 fn open_plugin_directory(app: tauri::AppHandle) -> Result<String, String> {
@@ -1224,66 +1471,12 @@ fn open_plugin_directory(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 fn clipboard_text() -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    let output = Command::new("pbpaste").output();
-    #[cfg(target_os = "windows")]
-    let output = hidden_windows_command("powershell")
-        .args(["-NoProfile", "-Command", "Get-Clipboard -Raw"])
-        .output();
-    #[cfg(target_os = "linux")]
-    let output = Command::new("sh")
-        .args([
-            "-c",
-            "wl-paste 2>/dev/null || xclip -selection clipboard -o",
-        ])
-        .output();
-    let output = output.map_err(|e| e.to_string())?;
-    if output.status.success() {
-        String::from_utf8(output.stdout).map_err(|e| e.to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
-    }
+    clipboard::read_text()
 }
 
 #[tauri::command]
 fn set_clipboard_text(text: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("pbcopy");
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = hidden_windows_command("powershell");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$input | Out-String | Set-Clipboard",
-        ]);
-        command
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let mut command = Command::new("sh");
-        command.args(["-c", "wl-copy 2>/dev/null || xclip -selection clipboard"]);
-        command
-    };
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "无法写入剪贴板".to_string())?
-        .write_all(text.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let output = child.wait_with_output().map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
-    }
+    clipboard::write_text(text)
 }
 
 fn default_file_search_roots() -> Vec<PathBuf> {
@@ -1323,8 +1516,7 @@ async fn search_files(
                 .follow_links(false)
                 .into_iter()
                 .filter_entry(|entry| {
-                    entry.depth() == 0
-                        || !entry.file_name().to_string_lossy().starts_with('.')
+                    entry.depth() == 0 || !entry.file_name().to_string_lossy().starts_with('.')
                 })
                 .filter_map(Result::ok)
             {
@@ -1356,7 +1548,7 @@ fn open_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("文件不存在".into());
     }
-    launch_app(path)
+    launch_path(path)
 }
 
 #[tauri::command]
@@ -1407,14 +1599,22 @@ async fn run_system_action(action: String) -> Result<(), String> {
         return run_windows_system_action(&action);
         #[cfg(target_os = "linux")]
         return run_linux_system_action(&action);
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn finish_system_command(mut command: Command) -> Result<(), String> {
     let output = command.output().map_err(|error| error.to_string())?;
-    if output.status.success() { return Ok(()); }
+    if output.status.success() {
+        return Ok(());
+    }
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() { format!("系统操作未完成：{}", output.status) } else { reason })
+    Err(if reason.is_empty() {
+        format!("系统操作未完成：{}", output.status)
+    } else {
+        reason
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1493,23 +1693,93 @@ fn windows_media_key(code: u8) -> Command {
 #[cfg(target_os = "linux")]
 fn run_linux_system_action(action: &str) -> Result<(), String> {
     let command = match action {
-        "lock" => { let mut value = Command::new("loginctl"); value.arg("lock-session"); value }
-        "sleep" => { let mut value = Command::new("systemctl"); value.arg("suspend"); value }
-        "hibernate" => { let mut value = Command::new("systemctl"); value.arg("hibernate"); value }
-        "sleep-displays" => { let mut value = Command::new("xset"); value.args(["dpms", "force", "off"]); value }
-        "restart" => { let mut value = Command::new("systemctl"); value.arg("reboot"); value }
-        "shut-down" => { let mut value = Command::new("systemctl"); value.arg("poweroff"); value }
-        "log-out" => { let mut value = Command::new("loginctl"); value.arg("terminate-user").arg(std::env::var("USER").unwrap_or_default()); value }
-        "show-screen-saver" => { let mut value = Command::new("xdg-screensaver"); value.arg("activate"); value }
-        "open-trash" => { let mut value = Command::new("xdg-open"); value.arg("trash:///"); value }
-        "empty-trash" => { let mut value = Command::new("gio"); value.args(["trash", "--empty"]); value }
-        "play-pause" => { let mut value = Command::new("playerctl"); value.arg("play-pause"); value }
-        "next-track" => { let mut value = Command::new("playerctl"); value.arg("next"); value }
-        "previous-track" => { let mut value = Command::new("playerctl"); value.arg("previous"); value }
-        "toggle-mute" => { let mut value = Command::new("pactl"); value.args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"]); value }
-        "volume-up" => { let mut value = Command::new("pactl"); value.args(["set-sink-volume", "@DEFAULT_SINK@", "+10%"]); value }
-        "volume-down" => { let mut value = Command::new("pactl"); value.args(["set-sink-volume", "@DEFAULT_SINK@", "-10%"]); value }
-        "show-desktop" => { let mut value = Command::new("xdotool"); value.args(["key", "super+d"]); value }
+        "lock" => {
+            let mut value = Command::new("loginctl");
+            value.arg("lock-session");
+            value
+        }
+        "sleep" => {
+            let mut value = Command::new("systemctl");
+            value.arg("suspend");
+            value
+        }
+        "hibernate" => {
+            let mut value = Command::new("systemctl");
+            value.arg("hibernate");
+            value
+        }
+        "sleep-displays" => {
+            let mut value = Command::new("xset");
+            value.args(["dpms", "force", "off"]);
+            value
+        }
+        "restart" => {
+            let mut value = Command::new("systemctl");
+            value.arg("reboot");
+            value
+        }
+        "shut-down" => {
+            let mut value = Command::new("systemctl");
+            value.arg("poweroff");
+            value
+        }
+        "log-out" => {
+            let mut value = Command::new("loginctl");
+            value
+                .arg("terminate-user")
+                .arg(std::env::var("USER").unwrap_or_default());
+            value
+        }
+        "show-screen-saver" => {
+            let mut value = Command::new("xdg-screensaver");
+            value.arg("activate");
+            value
+        }
+        "open-trash" => {
+            let mut value = Command::new("xdg-open");
+            value.arg("trash:///");
+            value
+        }
+        "empty-trash" => {
+            let mut value = Command::new("gio");
+            value.args(["trash", "--empty"]);
+            value
+        }
+        "play-pause" => {
+            let mut value = Command::new("playerctl");
+            value.arg("play-pause");
+            value
+        }
+        "next-track" => {
+            let mut value = Command::new("playerctl");
+            value.arg("next");
+            value
+        }
+        "previous-track" => {
+            let mut value = Command::new("playerctl");
+            value.arg("previous");
+            value
+        }
+        "toggle-mute" => {
+            let mut value = Command::new("pactl");
+            value.args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"]);
+            value
+        }
+        "volume-up" => {
+            let mut value = Command::new("pactl");
+            value.args(["set-sink-volume", "@DEFAULT_SINK@", "+10%"]);
+            value
+        }
+        "volume-down" => {
+            let mut value = Command::new("pactl");
+            value.args(["set-sink-volume", "@DEFAULT_SINK@", "-10%"]);
+            value
+        }
+        "show-desktop" => {
+            let mut value = Command::new("xdotool");
+            value.args(["key", "super+d"]);
+            value
+        }
         _ => return Err("不支持的系统操作".into()),
     };
     finish_system_command(command)
@@ -1518,7 +1788,8 @@ fn run_linux_system_action(action: &str) -> Result<(), String> {
 #[tauri::command]
 fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
     let action = match action.as_str() {
-        "left" | "right" | "top" | "bottom" | "center" | "maximize" | "almost-maximize" | "maximize-width" | "maximize-height" => action,
+        "left" | "right" | "top" | "bottom" | "center" | "maximize" | "almost-maximize"
+        | "maximize-width" | "maximize-height" => action,
         _ => return Err("不支持的窗口操作".into()),
     };
     if let Some(window) = app.get_webview_window("main") {
@@ -1543,7 +1814,13 @@ fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String
             .args(["-e", &script])
             .output()
             .map_err(|error| error.to_string())
-            .and_then(|output| if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).into_owned()) });
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).into_owned())
+                }
+            });
     }
     #[cfg(target_os = "windows")]
     {
@@ -1555,10 +1832,17 @@ fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String
             _ => "0x26",
         };
         let alt = matches!(action.as_str(), "top" | "bottom");
-        if matches!(action.as_str(), "center" | "almost-maximize" | "maximize-width" | "maximize-height") {
+        if matches!(
+            action.as_str(),
+            "center" | "almost-maximize" | "maximize-width" | "maximize-height"
+        ) {
             let mode = action.clone();
             let script = format!("Add-Type -AssemblyName System.Windows.Forms;Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int z,bool p);public struct R{{public int L,T,Ri,B;}}}}';$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;$wa=[System.Windows.Forms.Screen]::FromHandle($h).WorkingArea;$x=$wa.X;$y=$wa.Y;$w=$wa.Width;$z=$wa.Height;$m='{mode}';if($m -eq 'center'){{$x+=[int]($w*.15);$y+=[int]($z*.15);$w=[int]($w*.7);$z=[int]($z*.7)}}elseif($m -eq 'almost-maximize'){{$x+=28;$y+=28;$w-=56;$z-=56}}elseif($m -eq 'maximize-width'){{$y=$r.T;$z=$r.B-$r.T}}else{{$x=$r.L;$w=$r.Ri-$r.L}};[W]::MoveWindow($h,$x,$y,$w,$z,$true)|Out-Null");
-            return hidden_windows_command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn().map(|_| ()).map_err(|error| error.to_string());
+            return hidden_windows_command("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| error.to_string());
         }
         let script = format!(
             "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QK{{[DllImport(\"user32.dll\")]public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);}}';[QK]::keybd_event(0x5B,0,0,[UIntPtr]::Zero);{}[QK]::keybd_event({virtual_key},0,0,[UIntPtr]::Zero);[QK]::keybd_event({virtual_key},0,2,[UIntPtr]::Zero);{}[QK]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)",
@@ -1588,12 +1872,19 @@ fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String
 }
 
 fn expanded_working_directory(value: Option<String>) -> Result<Option<PathBuf>, String> {
-    let Some(value) = value.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()) else {
+    let Some(value) = value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(None);
     };
     let path = if let Some(rest) = value.strip_prefix("~/") {
-        let home = std::env::var_os(if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" })
-            .ok_or_else(|| "无法读取用户目录".to_string())?;
+        let home = std::env::var_os(if cfg!(target_os = "windows") {
+            "USERPROFILE"
+        } else {
+            "HOME"
+        })
+        .ok_or_else(|| "无法读取用户目录".to_string())?;
         PathBuf::from(home).join(rest)
     } else {
         PathBuf::from(value)
@@ -1621,7 +1912,10 @@ fn run_custom_command(
     working_directory: Option<String>,
     capture_output: bool,
 ) -> Result<String, String> {
-    if program.trim().is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
+    if program.trim().is_empty()
+        || program.contains('\0')
+        || args.iter().any(|arg| arg.contains('\0'))
+    {
         return Err("自定义命令无效".into());
     }
     let working_directory = expanded_working_directory(working_directory)?;
@@ -1630,8 +1924,16 @@ fn run_custom_command(
     let mut command = if direct_program {
         hidden_windows_command(program.trim())
     } else {
-        let joined = args.iter().map(|arg| powershell_quote(arg)).collect::<Vec<_>>().join(" ");
-        let script = if joined.is_empty() { program.clone() } else { format!("{} {}", program, joined) };
+        let joined = args
+            .iter()
+            .map(|arg| powershell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = if joined.is_empty() {
+            program.clone()
+        } else {
+            format!("{} {}", program, joined)
+        };
         let mut value = hidden_windows_command("powershell.exe");
         value.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
         value
@@ -1640,9 +1942,21 @@ fn run_custom_command(
     let mut command = if direct_program {
         Command::new(program.trim())
     } else {
-        let joined = args.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
-        let script = if joined.is_empty() { program.clone() } else { format!("{} {}", program, joined) };
-        let mut value = Command::new(if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" });
+        let joined = args
+            .iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = if joined.is_empty() {
+            program.clone()
+        } else {
+            format!("{} {}", program, joined)
+        };
+        let mut value = Command::new(if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/sh"
+        });
         value.args(["-lc", &script]);
         value
     };
@@ -1659,10 +1973,17 @@ fn run_custom_command(
         if output.status.success() {
             Ok(if stdout.is_empty() { stderr } else { stdout })
         } else {
-            Err(if stderr.is_empty() { format!("命令退出状态：{}", output.status) } else { stderr })
+            Err(if stderr.is_empty() {
+                format!("命令退出状态：{}", output.status)
+            } else {
+                stderr
+            })
         }
     } else {
-        command.spawn().map(|_| String::new()).map_err(|error| error.to_string())
+        command
+            .spawn()
+            .map(|_| String::new())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1670,21 +1991,33 @@ fn run_custom_command(
 fn open_external_url(url: String, open_with_bundle_id: Option<String>) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     let _ = &open_with_bundle_id;
-    let Some((scheme, _)) = url.split_once(':') else { return Err("链接缺少协议".into()) };
+    let Some((scheme, _)) = url.split_once(':') else {
+        return Err("链接缺少协议".into());
+    };
     if scheme.is_empty()
-        || !scheme.as_bytes().first().map(|value| value.is_ascii_alphabetic()).unwrap_or(false)
-        || !scheme.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '+' | '-' | '.'))
+        || !scheme
+            .as_bytes()
+            .first()
+            .map(|value| value.is_ascii_alphabetic())
+            .unwrap_or(false)
+        || !scheme
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '+' | '-' | '.'))
         || scheme.eq_ignore_ascii_case("file")
         || url.contains('\0')
-    { return Err("链接协议无效".into()); }
+    {
+        return Err("链接协议无效".into());
+    }
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut c = Command::new("open");
         if let Some(bundle_id) = open_with_bundle_id
             .filter(|value| !value.is_empty())
-            .filter(|value| value.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-            }))
+            .filter(|value| {
+                value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+                })
+            })
         {
             c.args(["-b", &bundle_id]);
         }
@@ -1708,400 +2041,400 @@ fn open_external_url(url: String, open_with_bundle_id: Option<String>) -> Result
 
 #[cfg(any())]
 mod removed_extension_runtime {
-use super::*;
+    use super::*;
 
-fn extensions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|dir| dir.join("extensions"))
-        .map_err(|e| e.to_string())
-}
+    fn extensions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+        app.path()
+            .app_data_dir()
+            .map(|dir| dir.join("extensions"))
+            .map_err(|e| e.to_string())
+    }
 
-fn file_data_url(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let mime = match path
-        .extension()?
-        .to_string_lossy()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "svg" => "image/svg+xml",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        _ => "image/png",
-    };
-    Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
-}
-
-fn manifest_icon(dir: &Path, value: &serde_json::Value) -> Option<String> {
-    let icon = value.get("icon").and_then(|v| v.as_str())?;
-    [dir.join(icon), dir.join("assets").join(icon)]
-        .into_iter()
-        .find_map(|path| file_data_url(&path))
-}
-
-fn scan_extension_commands_in(root: &Path) -> Vec<ExtensionCommand> {
-    let mut result = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else {
-        return result;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let dir = entry.path();
-        let Ok(raw) = fs::read_to_string(dir.join("package.json")) else {
-            continue;
+    fn file_data_url(path: &Path) -> Option<String> {
+        let bytes = fs::read(path).ok()?;
+        let mime = match path
+            .extension()?
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "svg" => "image/svg+xml",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            _ => "image/png",
         };
-        let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
+        Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+    }
+
+    fn manifest_icon(dir: &Path, value: &serde_json::Value) -> Option<String> {
+        let icon = value.get("icon").and_then(|v| v.as_str())?;
+        [dir.join(icon), dir.join("assets").join(icon)]
+            .into_iter()
+            .find_map(|path| file_data_url(&path))
+    }
+
+    fn scan_extension_commands_in(root: &Path) -> Vec<ExtensionCommand> {
+        let mut result = Vec::new();
+        let Ok(entries) = fs::read_dir(root) else {
+            return result;
         };
-        let fallback_name = entry.file_name().to_string_lossy().into_owned();
-        let extension_name = fs::read_to_string(dir.join(".qimao-source-name"))
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or(fallback_name);
-        let extension_title = pkg
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&extension_name)
-            .to_owned();
-        let owner = pkg
-            .get("owner")
-            .or_else(|| pkg.get("author"))
-            .and_then(|v| {
-                if let Some(s) = v.as_str() {
-                    Some(s)
-                } else {
-                    v.get("name").and_then(|n| n.as_str())
-                }
-            })
-            .map(str::to_owned);
-        let package_icon = manifest_icon(&dir, &pkg);
-        let extension_preferences = pkg
-            .get("preferences")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let Some(commands) = pkg.get("commands").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for command in commands {
-            let Some(command_name) = command.get("name").and_then(|v| v.as_str()) else {
+        for entry in entries.filter_map(Result::ok) {
+            let dir = entry.path();
+            let Ok(raw) = fs::read_to_string(dir.join("package.json")) else {
                 continue;
             };
-            let title = command
+            let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let fallback_name = entry.file_name().to_string_lossy().into_owned();
+            let extension_name = fs::read_to_string(dir.join(".qimao-source-name"))
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(fallback_name);
+            let extension_title = pkg
                 .get("title")
                 .and_then(|v| v.as_str())
-                .unwrap_or(command_name)
+                .unwrap_or(&extension_name)
                 .to_owned();
-            let description = command
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned();
-            let mode = command
-                .get("mode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("view")
-                .to_owned();
-            // Menu-bar commands require a persistent native menu host. Do not
-            // advertise them as runnable launcher commands. A command without
-            // its pre-built bundle is likewise not executable in qimiao.
-            if mode == "menu-bar"
-                || !dir
-                    .join(".sc-build")
-                    .join(format!("{command_name}.js"))
-                    .is_file()
-            {
-                continue;
-            }
-            let icon = manifest_icon(&dir, command).or_else(|| package_icon.clone());
-            let mut preferences = extension_preferences.clone();
-            preferences.extend(
-                command
-                    .get("preferences")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            result.push(ExtensionCommand {
-                id: format!("{extension_name}:{command_name}"),
-                extension_name: extension_name.clone(),
-                extension_title: extension_title.clone(),
-                owner: owner.clone(),
-                command_name: command_name.to_owned(),
-                title,
-                description,
-                mode,
-                icon,
-                preferences,
-            })
-        }
-    }
-    result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-    result
-}
-
-fn safe_extension_part(value: &str) -> Result<&str, String> {
-    if value.is_empty()
-        || !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
-    {
-        Err("扩展标识无效".into())
-    } else {
-        Ok(value)
-    }
-}
-
-fn extension_dir_name(value: &str) -> Result<String, String> {
-    let normalized = value
-        .trim()
-        .trim_start_matches('@')
-        .replace(['/', '\\'], "-");
-    safe_extension_part(&normalized)?;
-    Ok(normalized)
-}
-
-fn installed_extension_path(root: &Path, extension_name: &str) -> Result<PathBuf, String> {
-    let direct = root.join(extension_dir_name(extension_name)?);
-    if direct.join("package.json").is_file() {
-        return Ok(direct);
-    }
-    fs::read_dir(root)
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            fs::read_to_string(path.join(".qimao-source-name"))
-                .ok()
-                .is_some_and(|name| name.trim() == extension_name)
-        })
-        .ok_or_else(|| "未找到已安装扩展".into())
-}
-
-fn remove_extension_dir(path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut last_error = None;
-    for _ in 0..4 {
-        match fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                std::thread::sleep(Duration::from_millis(90));
-            }
-        }
-    }
-    Err(last_error
-        .map(|error| format!("删除扩展失败：{error}"))
-        .unwrap_or_else(|| "删除扩展失败".into()))
-}
-
-#[tauri::command]
-fn scan_extension_commands(app: tauri::AppHandle) -> Vec<ExtensionCommand> {
-    extensions_dir(&app)
-        .map(|root| scan_extension_commands_in(&root))
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, String> {
-    let query = query.trim().to_lowercase();
-    let endpoint = if query.is_empty() {
-        "https://api.supercmd.sh/extensions/popular?limit=48"
-    } else {
-        "https://api.supercmd.sh/extensions/catalog"
-    };
-    let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.9")
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut catalog = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|e| format!("获取扩展目录失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<Vec<serde_json::Value>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !query.is_empty() {
-        catalog.retain(|item| {
-            ["title", "name", "description", "author", "owner"]
-                .into_iter()
-                .filter_map(|key| item.get(key).and_then(|value| value.as_str()))
-                .any(|value| value.to_lowercase().contains(&query))
-        });
-    }
-    catalog.truncate(48);
-    Ok(serde_json::Value::Array(catalog))
-}
-
-#[tauri::command]
-async fn install_extension(
-    app: tauri::AppHandle,
-    extension_name: String,
-) -> Result<Vec<ExtensionCommand>, String> {
-    let source_name = extension_name.trim().to_owned();
-    if source_name.is_empty() {
-        return Err("扩展标识无效".into());
-    }
-    let install_name = extension_dir_name(&source_name)?;
-    let root = extensions_dir(&app)?;
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let endpoint = format!(
-        "https://api.supercmd.sh/extensions/{}/bundle",
-        urlencoding::encode(&source_name)
-    );
-    let client = reqwest::Client::builder()
-        .user_agent("qimiao/0.9.9")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let ticket: ExtensionBundleTicket = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|e| format!("获取扩展下载地址失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-    let archive = client
-        .get(ticket.url)
-        .send()
-        .await
-        .map_err(|e| format!("下载扩展失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    let install_root = root.clone();
-    let install_source_name = source_name.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let staging =
-            install_root.join(format!(".install-{}-{}", install_name, std::process::id()));
-        if staging.exists() {
-            fs::remove_dir_all(&staging).map_err(|e| e.to_string())?
-        }
-        fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-        let decoder = flate2::read::GzDecoder::new(archive.as_ref());
-        let mut tar = tar::Archive::new(decoder);
-        for item in tar.entries().map_err(|e| e.to_string())? {
-            let mut entry = item.map_err(|e| e.to_string())?;
-            if !entry.unpack_in(&staging).map_err(|e| e.to_string())? {
-                return Err("扩展包包含不安全路径".into());
-            }
-        }
-        let source = WalkDir::new(&staging)
-            .max_depth(5)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_dir())
-            .filter(|entry| entry.path().join("package.json").is_file())
-            .min_by_key(|entry| entry.depth())
-            .map(|entry| entry.into_path())
-            .ok_or("扩展包中缺少 package.json")?;
-        let raw_manifest = fs::read_to_string(source.join("package.json"))
-            .map_err(|e| format!("读取扩展清单失败：{e}"))?;
-        let manifest: serde_json::Value =
-            serde_json::from_str(&raw_manifest).map_err(|e| format!("扩展清单无效：{e}"))?;
-        let commands = manifest
-            .get("commands")
-            .and_then(|value| value.as_array())
-            .ok_or("扩展清单中没有命令")?;
-        let runnable = commands.iter().filter(|command| {
-            let mode = command.get("mode").and_then(|value| value.as_str());
-            let name = command.get("name").and_then(|value| value.as_str());
-            mode != Some("menu-bar")
-                && name.is_some_and(|name| {
-                    source
-                        .join(".sc-build")
-                        .join(format!("{name}.js"))
-                        .is_file()
+            let owner = pkg
+                .get("owner")
+                .or_else(|| pkg.get("author"))
+                .and_then(|v| {
+                    if let Some(s) = v.as_str() {
+                        Some(s)
+                    } else {
+                        v.get("name").and_then(|n| n.as_str())
+                    }
                 })
-        });
-        if runnable.count() == 0 {
-            return Err("扩展包没有可在启喵中运行的预构建命令".into());
-        }
-        let target = install_root.join(&install_name);
-        if target.exists() {
-            remove_extension_dir(&target)?
-        }
-        fs::rename(source, &target).map_err(|e| e.to_string())?;
-        fs::write(target.join(".qimao-source-name"), &install_source_name)
-            .map_err(|e| e.to_string())?;
-        let _ = fs::remove_dir_all(staging);
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(scan_extension_commands_in(&root))
-}
-
-#[tauri::command]
-async fn uninstall_extension(
-    app: tauri::AppHandle,
-    extension_name: String,
-) -> Result<Vec<ExtensionCommand>, String> {
-    let root = extensions_dir(&app)?;
-    let target = installed_extension_path(&root, &extension_name)?;
-    tauri::async_runtime::spawn_blocking(move || remove_extension_dir(&target))
-        .await
-        .map_err(|e| e.to_string())??;
-    Ok(scan_extension_commands_in(&root))
-}
-
-#[tauri::command]
-fn load_extension_command(
-    app: tauri::AppHandle,
-    extension_name: String,
-    command_name: String,
-) -> Result<ExtensionBundle, String> {
-    let command_name = safe_extension_part(&command_name)?;
-    let root = extensions_dir(&app)?;
-    let dir = installed_extension_path(&root, &extension_name)?;
-    let command = scan_extension_commands_in(&root)
-        .into_iter()
-        .find(|item| item.extension_name == extension_name && item.command_name == command_name)
-        .ok_or("未找到扩展命令")?;
-    let code = fs::read_to_string(dir.join(".sc-build").join(format!("{command_name}.js")))
-        .map_err(|e| format!("读取扩展构建文件失败：{e}"))?;
-    let assets_dir = dir.join("assets");
-    let mut assets = Vec::new();
-    if assets_dir.exists() {
-        for item in WalkDir::new(&assets_dir)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-        {
-            let path = item.path();
-            let Ok(relative) = path.strip_prefix(&assets_dir) else {
+                .map(str::to_owned);
+            let package_icon = manifest_icon(&dir, &pkg);
+            let extension_preferences = pkg
+                .get("preferences")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let Some(commands) = pkg.get("commands").and_then(|v| v.as_array()) else {
                 continue;
             };
-            let Ok(data) = fs::read(path) else { continue };
-            if data.len() > 8 * 1024 * 1024 {
-                continue;
+            for command in commands {
+                let Some(command_name) = command.get("name").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let title = command
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(command_name)
+                    .to_owned();
+                let description = command
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let mode = command
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("view")
+                    .to_owned();
+                // Menu-bar commands require a persistent native menu host. Do not
+                // advertise them as runnable launcher commands. A command without
+                // its pre-built bundle is likewise not executable in qimiao.
+                if mode == "menu-bar"
+                    || !dir
+                        .join(".sc-build")
+                        .join(format!("{command_name}.js"))
+                        .is_file()
+                {
+                    continue;
+                }
+                let icon = manifest_icon(&dir, command).or_else(|| package_icon.clone());
+                let mut preferences = extension_preferences.clone();
+                preferences.extend(
+                    command
+                        .get("preferences")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                result.push(ExtensionCommand {
+                    id: format!("{extension_name}:{command_name}"),
+                    extension_name: extension_name.clone(),
+                    extension_title: extension_title.clone(),
+                    owner: owner.clone(),
+                    command_name: command_name.to_owned(),
+                    title,
+                    description,
+                    mode,
+                    icon,
+                    preferences,
+                })
             }
-            assets.push(ExtensionAsset {
-                path: relative.to_string_lossy().replace('\\', "/"),
-                data: STANDARD.encode(data),
-            })
+        }
+        result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        result
+    }
+
+    fn safe_extension_part(value: &str) -> Result<&str, String> {
+        if value.is_empty()
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
+        {
+            Err("扩展标识无效".into())
+        } else {
+            Ok(value)
         }
     }
-    Ok(ExtensionBundle {
-        command,
-        code,
-        assets,
-        extension_path: dir.to_string_lossy().into_owned(),
-    })
-}
+
+    fn extension_dir_name(value: &str) -> Result<String, String> {
+        let normalized = value
+            .trim()
+            .trim_start_matches('@')
+            .replace(['/', '\\'], "-");
+        safe_extension_part(&normalized)?;
+        Ok(normalized)
+    }
+
+    fn installed_extension_path(root: &Path, extension_name: &str) -> Result<PathBuf, String> {
+        let direct = root.join(extension_dir_name(extension_name)?);
+        if direct.join("package.json").is_file() {
+            return Ok(direct);
+        }
+        fs::read_dir(root)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                fs::read_to_string(path.join(".qimao-source-name"))
+                    .ok()
+                    .is_some_and(|name| name.trim() == extension_name)
+            })
+            .ok_or_else(|| "未找到已安装扩展".into())
+    }
+
+    fn remove_extension_dir(path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut last_error = None;
+        for _ in 0..4 {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error);
+                    std::thread::sleep(Duration::from_millis(90));
+                }
+            }
+        }
+        Err(last_error
+            .map(|error| format!("删除扩展失败：{error}"))
+            .unwrap_or_else(|| "删除扩展失败".into()))
+    }
+
+    #[tauri::command]
+    fn scan_extension_commands(app: tauri::AppHandle) -> Vec<ExtensionCommand> {
+        extensions_dir(&app)
+            .map(|root| scan_extension_commands_in(&root))
+            .unwrap_or_default()
+    }
+
+    #[tauri::command]
+    async fn fetch_extension_catalog(query: String) -> Result<serde_json::Value, String> {
+        let query = query.trim().to_lowercase();
+        let endpoint = if query.is_empty() {
+            "https://api.supercmd.sh/extensions/popular?limit=48"
+        } else {
+            "https://api.supercmd.sh/extensions/catalog"
+        };
+        let client = reqwest::Client::builder()
+            .user_agent("qimiao/0.9.9")
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut catalog = client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|e| format!("获取扩展目录失败：{e}"))?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json::<Vec<serde_json::Value>>()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !query.is_empty() {
+            catalog.retain(|item| {
+                ["title", "name", "description", "author", "owner"]
+                    .into_iter()
+                    .filter_map(|key| item.get(key).and_then(|value| value.as_str()))
+                    .any(|value| value.to_lowercase().contains(&query))
+            });
+        }
+        catalog.truncate(48);
+        Ok(serde_json::Value::Array(catalog))
+    }
+
+    #[tauri::command]
+    async fn install_extension(
+        app: tauri::AppHandle,
+        extension_name: String,
+    ) -> Result<Vec<ExtensionCommand>, String> {
+        let source_name = extension_name.trim().to_owned();
+        if source_name.is_empty() {
+            return Err("扩展标识无效".into());
+        }
+        let install_name = extension_dir_name(&source_name)?;
+        let root = extensions_dir(&app)?;
+        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        let endpoint = format!(
+            "https://api.supercmd.sh/extensions/{}/bundle",
+            urlencoding::encode(&source_name)
+        );
+        let client = reqwest::Client::builder()
+            .user_agent("qimiao/0.9.9")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let ticket: ExtensionBundleTicket = client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|e| format!("获取扩展下载地址失败：{e}"))?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        let archive = client
+            .get(ticket.url)
+            .send()
+            .await
+            .map_err(|e| format!("下载扩展失败：{e}"))?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .bytes()
+            .await
+            .map_err(|e| e.to_string())?;
+        let install_root = root.clone();
+        let install_source_name = source_name.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let staging =
+                install_root.join(format!(".install-{}-{}", install_name, std::process::id()));
+            if staging.exists() {
+                fs::remove_dir_all(&staging).map_err(|e| e.to_string())?
+            }
+            fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+            let decoder = flate2::read::GzDecoder::new(archive.as_ref());
+            let mut tar = tar::Archive::new(decoder);
+            for item in tar.entries().map_err(|e| e.to_string())? {
+                let mut entry = item.map_err(|e| e.to_string())?;
+                if !entry.unpack_in(&staging).map_err(|e| e.to_string())? {
+                    return Err("扩展包包含不安全路径".into());
+                }
+            }
+            let source = WalkDir::new(&staging)
+                .max_depth(5)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_dir())
+                .filter(|entry| entry.path().join("package.json").is_file())
+                .min_by_key(|entry| entry.depth())
+                .map(|entry| entry.into_path())
+                .ok_or("扩展包中缺少 package.json")?;
+            let raw_manifest = fs::read_to_string(source.join("package.json"))
+                .map_err(|e| format!("读取扩展清单失败：{e}"))?;
+            let manifest: serde_json::Value =
+                serde_json::from_str(&raw_manifest).map_err(|e| format!("扩展清单无效：{e}"))?;
+            let commands = manifest
+                .get("commands")
+                .and_then(|value| value.as_array())
+                .ok_or("扩展清单中没有命令")?;
+            let runnable = commands.iter().filter(|command| {
+                let mode = command.get("mode").and_then(|value| value.as_str());
+                let name = command.get("name").and_then(|value| value.as_str());
+                mode != Some("menu-bar")
+                    && name.is_some_and(|name| {
+                        source
+                            .join(".sc-build")
+                            .join(format!("{name}.js"))
+                            .is_file()
+                    })
+            });
+            if runnable.count() == 0 {
+                return Err("扩展包没有可在启喵中运行的预构建命令".into());
+            }
+            let target = install_root.join(&install_name);
+            if target.exists() {
+                remove_extension_dir(&target)?
+            }
+            fs::rename(source, &target).map_err(|e| e.to_string())?;
+            fs::write(target.join(".qimao-source-name"), &install_source_name)
+                .map_err(|e| e.to_string())?;
+            let _ = fs::remove_dir_all(staging);
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(scan_extension_commands_in(&root))
+    }
+
+    #[tauri::command]
+    async fn uninstall_extension(
+        app: tauri::AppHandle,
+        extension_name: String,
+    ) -> Result<Vec<ExtensionCommand>, String> {
+        let root = extensions_dir(&app)?;
+        let target = installed_extension_path(&root, &extension_name)?;
+        tauri::async_runtime::spawn_blocking(move || remove_extension_dir(&target))
+            .await
+            .map_err(|e| e.to_string())??;
+        Ok(scan_extension_commands_in(&root))
+    }
+
+    #[tauri::command]
+    fn load_extension_command(
+        app: tauri::AppHandle,
+        extension_name: String,
+        command_name: String,
+    ) -> Result<ExtensionBundle, String> {
+        let command_name = safe_extension_part(&command_name)?;
+        let root = extensions_dir(&app)?;
+        let dir = installed_extension_path(&root, &extension_name)?;
+        let command = scan_extension_commands_in(&root)
+            .into_iter()
+            .find(|item| item.extension_name == extension_name && item.command_name == command_name)
+            .ok_or("未找到扩展命令")?;
+        let code = fs::read_to_string(dir.join(".sc-build").join(format!("{command_name}.js")))
+            .map_err(|e| format!("读取扩展构建文件失败：{e}"))?;
+        let assets_dir = dir.join("assets");
+        let mut assets = Vec::new();
+        if assets_dir.exists() {
+            for item in WalkDir::new(&assets_dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_file())
+            {
+                let path = item.path();
+                let Ok(relative) = path.strip_prefix(&assets_dir) else {
+                    continue;
+                };
+                let Ok(data) = fs::read(path) else { continue };
+                if data.len() > 8 * 1024 * 1024 {
+                    continue;
+                }
+                assets.push(ExtensionAsset {
+                    path: relative.to_string_lossy().replace('\\', "/"),
+                    data: STANDARD.encode(data),
+                })
+            }
+        }
+        Ok(ExtensionBundle {
+            command,
+            code,
+            assets,
+            extension_path: dir.to_string_lossy().into_owned(),
+        })
+    }
 }
 
 #[tauri::command]
@@ -2119,22 +2452,40 @@ fn hide_launcher(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn set_window_layout(window: tauri::WebviewWindow, layout: String) -> Result<(), String> {
-    let (width, height, min_width) = match layout.as_str() {
-        "grid" => (920.0_f64, 600.0_f64, 740.0_f64),
-        "list" => (680.0_f64, 600.0_f64, 620.0_f64),
+    let (width, height, min_width, min_height) = match layout.as_str() {
+        "grid" => (920.0_f64, 600.0_f64, 740.0_f64, 480.0_f64),
+        "list" => (680.0_f64, 600.0_f64, 620.0_f64, 480.0_f64),
+        "compact" => (680.0_f64, 430.0_f64, 480.0_f64, 320.0_f64),
         _ => return Err("未知窗口布局".into()),
     };
-    window.app_handle().state::<WindowRuntime>().protect_focus(Duration::from_millis(900));
-    let monitor = window.current_monitor().map_err(|error| error.to_string())?;
-    let (width, height) = monitor.as_ref().map(|monitor| {
-        let scale = monitor.scale_factor();
-        (width.min(monitor.size().width as f64 / scale * 0.92),
-         height.min(monitor.size().height as f64 / scale * 0.88))
-    }).unwrap_or((width, height));
-    window.set_min_size(Some(tauri::LogicalSize::new(min_width.min(width), 480.0_f64.min(height))))
+    window
+        .app_handle()
+        .state::<WindowRuntime>()
+        .protect_focus(Duration::from_millis(900));
+    let monitor = window
+        .current_monitor()
         .map_err(|error| error.to_string())?;
-    window.set_size(tauri::LogicalSize::new(width, height)).map_err(|error| error.to_string())?;
-    position_launcher(&window);
+    let (width, height) = monitor
+        .as_ref()
+        .map(|monitor| {
+            let scale = monitor.scale_factor();
+            (
+                width.min(monitor.size().width as f64 / scale * 0.92),
+                height.min(monitor.size().height as f64 / scale * 0.88),
+            )
+        })
+        .unwrap_or((width, height));
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(
+            min_width.min(width),
+            min_height.min(height),
+        )))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())?;
+    // Keep the user's dragged position during in-app mode changes.
+    // show_launcher() restores the default centered, slightly lower position.
     #[cfg(target_os = "windows")]
     apply_windows_rounded_region(&window).map_err(|error| error.to_string())?;
     Ok(())
@@ -2174,16 +2525,27 @@ fn set_window_material(
     }
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSGlassEffectView, NSGlassEffectViewStyle, NSWindow};
+        use objc2_app_kit::{
+            NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua,
+            NSAppearanceNameDarkAqua, NSGlassEffectView, NSGlassEffectViewStyle, NSWindow,
+        };
         let ns_window =
             unsafe { &*(window.ns_window().map_err(|e| e.to_string())? as *const NSWindow) };
         let appearance = NSAppearance::appearanceNamed(unsafe {
-            if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua }
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
         });
         // Release a previously forced window appearance when returning to
         // System. Otherwise WebKit's media query keeps reporting the forced
         // theme rather than the user's current macOS appearance.
-        ns_window.setAppearance(if follow_system { None } else { appearance.as_deref() });
+        ns_window.setAppearance(if follow_system {
+            None
+        } else {
+            appearance.as_deref()
+        });
         if let Some(content) = ns_window.contentView() {
             if let Some(glass) = content.downcast_ref::<NSGlassEffectView>() {
                 glass.setCornerRadius(26.0);
@@ -2278,20 +2640,8 @@ fn shortcut_from_text(accelerator: &str) -> Result<Shortcut, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale: f64) {
+fn set_windows_rounded_region(hwnd: isize, _size: tauri::PhysicalSize<u32>, _scale: f64) {
     type NativeHandle = isize;
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateRoundRectRgn(
-            left: i32,
-            top: i32,
-            right: i32,
-            bottom: i32,
-            width: i32,
-            height: i32,
-        ) -> NativeHandle;
-        fn DeleteObject(object: NativeHandle) -> i32;
-    }
     #[link(name = "user32")]
     extern "system" {
         fn SetWindowRgn(window: NativeHandle, region: NativeHandle, redraw: i32) -> i32;
@@ -2306,11 +2656,10 @@ fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale
         ) -> i32;
     }
 
-    let diameter = (52.0 * scale).round().max(2.0) as i32;
-    // DWMWA_WINDOW_CORNER_PREFERENCE / DWMWCP_ROUND. The window region below
-    // is the important part for transparent, borderless WebView2 windows; it
-    // physically clips the compositor surface so no square pixels can leak.
-    let preference: u32 = 2;
+    // A GDI round region is binary (jagged) and its 26px radius disagreed with
+    // WebView's anti-aliased mask. Clear it, disable the second DWM curve and
+    // let ONE 6px CSS surface supply per-pixel-alpha corners on Win10/11.
+    let preference: u32 = 1; // DWMWCP_DONOTROUND
     let color_none: u32 = 0xffff_fffe;
     unsafe {
         let _ = DwmSetWindowAttribute(
@@ -2325,17 +2674,7 @@ fn set_windows_rounded_region(hwnd: isize, size: tauri::PhysicalSize<u32>, scale
             (&color_none as *const u32).cast(),
             std::mem::size_of_val(&color_none) as u32,
         );
-        let region = CreateRoundRectRgn(
-            0,
-            0,
-            size.width.saturating_add(1) as i32,
-            size.height.saturating_add(1) as i32,
-            diameter,
-            diameter,
-        );
-        if region != 0 && SetWindowRgn(hwnd, region, 1) == 0 {
-            let _ = DeleteObject(region);
-        }
+        let _ = SetWindowRgn(hwnd, 0, 1);
     }
 }
 
@@ -2430,6 +2769,15 @@ fn position_launcher(window: &tauri::WebviewWindow) {
     let x = origin.x + (area.width.saturating_sub(size.width) / 2) as i32;
     let y = origin.y + ((area.height.saturating_sub(size.height)) as f64 * 0.58) as i32;
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+#[tauri::command]
+fn start_launcher_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .app_handle()
+        .state::<WindowRuntime>()
+        .protect_focus(Duration::from_millis(1500));
+    window.start_dragging().map_err(|error| error.to_string())
 }
 
 fn show_launcher(app: &tauri::AppHandle) {
@@ -2558,6 +2906,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ShortcutRuntime::default())
         .manage(WindowRuntime::default())
+        .manage(clipboard::ClipboardRuntime::default())
+        .manage(webdav::DavRuntime::default())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("启喵")
@@ -2669,6 +3019,12 @@ pub fn run() {
             _ => {}
         })
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Moved(_)) {
+                window
+                    .app_handle()
+                    .state::<WindowRuntime>()
+                    .protect_focus(Duration::from_millis(500));
+            }
             #[cfg(target_os = "windows")]
             if matches!(event, tauri::WindowEvent::Resized(_)) {
                 window
@@ -2684,6 +3040,19 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            fonts::list_local_fonts,
+            clipboard::clipboard_snapshot,
+            clipboard::load_clipboard_history,
+            clipboard::save_clipboard_history,
+            clipboard::copy_clipboard_item,
+            clipboard::paste_clipboard_item,
+            clipboard::export_clipboard_item,
+            clipboard::webdav_image,
+            webdav::webdav_connect,
+            webdav::webdav_read,
+            webdav::webdav_write,
+            webdav::webdav_forget,
+            start_launcher_drag,
             scan_apps,
             existing_app_paths,
             launch_app,
@@ -2692,6 +3061,7 @@ pub fn run() {
             import_backup,
             choose_apps,
             desktop_apps,
+            manual_app_candidates,
             clipboard_text,
             set_clipboard_text,
             search_files,
@@ -2800,7 +3170,9 @@ mod tests {
     #[test]
     fn windows_icons_have_equal_optical_size_despite_source_padding() {
         let mut plain = image::RgbaImage::new(32, 32);
-        for pixel in plain.pixels_mut() { *pixel = image::Rgba([200, 30, 40, 255]); }
+        for pixel in plain.pixels_mut() {
+            *pixel = image::Rgba([200, 30, 40, 255]);
+        }
         let mut padded = image::RgbaImage::new(128, 128);
         image::imageops::overlay(&mut padded, &plain, 48, 48);
         let normalized = normalize_windows_icon(plain);
@@ -2819,8 +3191,65 @@ mod tests {
         assert!(empty.get_pixel(80, 80)[3] > 0);
     }
     #[test]
+    fn windows_icons_ignore_faint_canvas_and_opaque_white_padding() {
+        let mut faint = image::RgbaImage::from_pixel(160, 160, image::Rgba([40, 60, 80, 24]));
+        for y in 72..88 {
+            for x in 72..88 {
+                faint.put_pixel(x, y, image::Rgba([20, 110, 220, 255]));
+            }
+        }
+        assert_eq!(windows_icon_bounds(&faint), Some((72, 72, 87, 87)));
+        let normalized = normalize_windows_icon(faint);
+        let blue = normalized
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p[2] > 180 && p[0] < 80)
+            .map(|(x, y, _)| (x, y))
+            .collect::<Vec<_>>();
+        assert!(
+            blue.iter().map(|(x, _)| x).max().unwrap() - blue.iter().map(|(x, _)| x).min().unwrap()
+                >= 125
+        );
+        let mut white = image::RgbaImage::from_pixel(160, 160, image::Rgba([255, 255, 255, 255]));
+        for y in 72..88 {
+            for x in 72..88 {
+                white.put_pixel(x, y, image::Rgba([20, 110, 220, 255]));
+            }
+        }
+        let bounds = windows_icon_bounds(&white).unwrap();
+        assert!(bounds.2 - bounds.0 < 24);
+        let normalized = normalize_windows_icon(white);
+        let blue_width = normalized
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p[2] > 180 && p[0] < 80)
+            .map(|(x, _, _)| x)
+            .collect::<Vec<_>>();
+        assert!(blue_width.iter().max().unwrap() - blue_width.iter().min().unwrap() > 100);
+    }
+    #[test]
+    fn explicit_catalog_hides_maintenance_but_accepts_application_shortcuts() {
+        for name in [
+            "Uninstall IDM.lnk",
+            "卸载微信.lnk",
+            "unins000.exe",
+            "Command Prompt.lnk",
+            "Task Manager.lnk",
+        ] {
+            assert!(looks_like_windows_non_app(Path::new(name)), "{name}");
+        }
+        for name in [
+            "Telegram.lnk",
+            "Clippi.lnk",
+            "ASUS DriverHub.lnk",
+            "MicYou.lnk",
+            "PicLite.exe",
+        ] {
+            assert!(!looks_like_windows_non_app(Path::new(name)), "{name}");
+        }
+    }
+    #[test]
     fn runs_captured_custom_shell_command_in_working_directory() {
-        let root = std::env::temp_dir().join(format!("qimiao-command-fixture-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("qimiao-command-fixture-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let output = run_custom_command(
             "printf '%s' \"$PWD\"".into(),
@@ -2829,7 +3258,10 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(Path::new(&output).canonicalize().unwrap(), root.canonicalize().unwrap());
+        assert_eq!(
+            Path::new(&output).canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -2846,7 +3278,9 @@ mod tests {
     #[test]
     fn imports_tinycast_archive_models() {
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = std::env::temp_dir().join(format!("qimiao-tinycast-fixture-{stamp}"));
         let source = root.join("source");
         fs::create_dir_all(source.join("snippets")).unwrap();
@@ -2856,13 +3290,22 @@ mod tests {
         fs::write(source.join("settings.json"), r#"{"quicklinks":[{"name":"Search","link":"https://example.com?q={argument}"}],"customCommands":[]}"#).unwrap();
         fs::write(source.join("snippets/greeting.md"), "---\nname: \"Greeting\"\nkeyword: \"!hi\"\nenabled: true\nshow_confirmation: false\n---\nHello {argument}").unwrap();
         fs::write(source.join("notes/Plan.md"), "# Plan\n- [ ] Ship").unwrap();
-        fs::write(source.join("clipboard/items.jsonl"), "{\"kind\":\"text\",\"text\":\"Copied text\",\"createdAt\":\"2026-01-01T00:00:00Z\"}\n").unwrap();
+        fs::write(
+            source.join("clipboard/items.jsonl"),
+            "{\"kind\":\"text\",\"text\":\"Copied text\",\"createdAt\":\"2026-01-01T00:00:00Z\"}\n",
+        )
+        .unwrap();
         let archive = root.join("fixture.tinycast");
         let status = Command::new("/usr/bin/aa")
-            .args(["archive", "-d"]).arg(&source).args(["-o"]).arg(&archive)
-            .status().unwrap();
+            .args(["archive", "-d"])
+            .arg(&source)
+            .args(["-o"])
+            .arg(&archive)
+            .status()
+            .unwrap();
         assert!(status.success());
-        let imported: serde_json::Value = serde_json::from_str(&read_tinycast_archive(&archive).unwrap()).unwrap();
+        let imported: serde_json::Value =
+            serde_json::from_str(&read_tinycast_archive(&archive).unwrap()).unwrap();
         assert_eq!(imported["settings"]["quicklinks"][0]["name"], "Search");
         assert_eq!(imported["snippets"][0]["keyword"], "!hi");
         assert_eq!(imported["notes"][0]["title"], "Plan");
