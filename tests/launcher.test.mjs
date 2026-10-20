@@ -13,7 +13,62 @@ const clipboard = await importBundled("src/clipboard-core.ts");
 const layout = await importBundled("src/app-layout.ts");
 const sync = await importBundled("src/sync-core.ts");
 const compact = await importBundled("src/compact-results.ts");
+const commands = await importBundled("src/command-center.ts");
+const clipView = await importBundled("src/clipboard-view.ts");
 const app = (name, extra = {}) => ({ id: name, name, path: `/Applications/${name}.app`, launchCount: 0, favorite: false, ...extra });
+
+test("command helpers accept advertised dictionary syntax and preserve quoted arguments", () => {
+  assert.equal(commands.dictionaryTerm("dict:hello"), "hello");
+  assert.equal(commands.dictionaryTerm("dict: hello world"), "hello world");
+  assert.equal(commands.dictionaryTerm("词典：hello"), "hello");
+  assert.equal(commands.dictionaryTerm("define hello"), "hello");
+  assert.equal(commands.dictionaryTerm("dictionary"), null);
+  assert.deepEqual(commands.splitCommandArguments('"hello world" --name \'two words\' "" C:\\Tools\\app.exe'), ["hello world", "--name", "two words", "", "C:\\Tools\\app.exe"]);
+  assert.equal(commands.splitCommandArguments('"unfinished'), null);
+});
+
+test("unit conversion includes time, Chinese aliases and absolute temperature limits", () => {
+  assert.ok(Math.abs(commands.convertUnits("100 c to f").value - 212) < 1e-9);
+  assert.ok(Math.abs(commands.convertUnits("32℉ 转 摄氏度").value) < 1e-9);
+  assert.equal(commands.convertUnits("2 小时 转 分钟").value, 120);
+  assert.equal(commands.convertUnits("1 公斤 转 克").value, 1000);
+  assert.equal(commands.convertUnits("1 gb to mb").value, 1024);
+  assert.equal(commands.convertUnits("-274 c to k"), null);
+  assert.equal(commands.convertUnits("1 m to kg"), null);
+});
+
+test("text utilities format JSON, round-trip Unicode Base64 and convert timestamps without execution", () => {
+  assert.equal(commands.textUtility('json: {"hello":1}').value, '{\n  "hello": 1\n}');
+  const encoded = commands.textUtility("base64: 启喵 Hello 👋").value;
+  assert.equal(commands.textUtility(`decode64: ${encoded}`).value, "启喵 Hello 👋");
+  assert.equal(commands.textUtility("json: {broken}").action, "input-error");
+  assert.equal(commands.textUtility("decode64: %%%").action, "input-error");
+  assert.equal(commands.textUtility("time: garbage").action, "input-error");
+  assert.ok(commands.textUtility("time: 0").value.includes("1970-01-01T00:00:00.000Z"));
+  assert.ok(commands.textUtility("time: now", false, 100000).value.includes("Unix (s): 100"));
+  assert.equal(commands.textUtility("cmd: dangerous"), null);
+});
+
+test("clipboard file subcategories and previews do not fetch remote or executable URLs", () => {
+  for (const [file, kind] of [["C:\\Docs\\REPORT.PDF", "document"], ["/tmp/archive.7z", "archive"], ["/Applications/App.app", "application"], ["/tmp/no-extension", "other"]]) {
+    assert.equal(clipView.clipboardCategory({ kind: "file", files: [file] }), kind);
+  }
+  assert.equal(clipView.clipboardCategory({ kind: "file", files: ["a.pdf", "b.zip"] }), "other");
+  assert.equal(clipView.clipboardCategory({ kind: "text" }), "text");
+  assert.equal(clipView.clipLink("javascript:alert(1)"), null);
+  assert.equal(clipView.clipLink("https://github.com/amiaoapp/qimiao/").hostname, "github.com");
+  assert.equal(clipView.clipRelativeTime(1000, false, 61000), "1 分钟前");
+  assert.equal(clipView.clipRelativeTime(1000, true, 61000), "1m ago");
+});
+
+test("independent hotkeys are normalized and stay device-local", () => {
+  const settings = sync.normalizeSettings({ clipboardHotkey: "", commandsHotkey: 123 });
+  assert.equal(settings.clipboardHotkey, "");
+  assert.equal(settings.commandsHotkey, "CommandOrControl+Shift+K");
+  const portable = sync.portableConfiguration(settings, []).settings;
+  assert.equal(portable.clipboardHotkey, undefined);
+  assert.equal(portable.commandsHotkey, undefined);
+});
 
 test("local font stacks are quoted safely and retain system fallbacks", () => {
   assert.equal(appearance.fontStackFor(""), appearance.SYSTEM_FONT_STACK);
@@ -73,6 +128,42 @@ test("favorites occupy the same shelf on every page and in list mode", () => {
   assert.equal(layout.appPageLayout(apps,pins,[],"list",false,false,0).pageApps.length,72);
   assert.equal(layout.appPageLayout(apps,pins,[],"grid",false,true,0).topRow.length,0);
   assert.equal(layout.appPageLayout([],pins,[],"grid",false,false,5).topRow.length,2);
+});
+
+test("favorites share the shelf with recommendations and collapse only above three", () => {
+  for (const count of [0, 1, 3, 4, 12]) {
+    const pins = Array.from({ length: count }, (_, i) => app(`Pinned ${i}`, { favorite: true }));
+    const suggestions = Array.from({ length: 40 }, (_, i) => app(`Suggestion ${i}`));
+    const apps = [...pins, ...suggestions];
+    for (const page of [0, 1]) {
+      const result = layout.appPageLayout(apps, pins, apps, "grid", true, false, page);
+      assert.equal(result.stackPins, count > 3);
+      assert.equal(result.shelfCount, 7);
+      assert.equal(result.topRow.filter((item) => !item.favorite).length, count > 3 ? 6 : 7 - count);
+      assert.equal(result.topRow.filter((item) => item.favorite).length, count > 3 ? 0 : count);
+      const shelfIds = new Set([...pins, ...result.topRow].map((item) => item.id));
+      assert.ok(result.pageApps.every((item) => !shelfIds.has(item.id)));
+    }
+    const searching = layout.appPageLayout(apps, pins, apps, "grid", true, true, 0);
+    assert.equal(searching.stackPins, false);
+    assert.equal(searching.shelfCount, 0);
+    assert.ok(searching.pageApps.some((item) => item.id === apps[0].id));
+    const disabled = layout.appPageLayout(apps, pins, apps, "grid", false, false, 0);
+    assert.equal(disabled.shelfCount, count > 3 ? 1 : count);
+    assert.ok(disabled.topRow.every((item) => item.favorite));
+  }
+});
+
+test("arrow navigation crosses commands, the pinned shelf and the app grid", () => {
+  const move = layout.nextLauncherSelection;
+  assert.equal(move(0, "ArrowDown", 2, 0, 8, 7), 1);
+  assert.equal(move(1, "ArrowDown", 2, 0, 8, 7), 2);
+  assert.equal(move(2, "ArrowRight", 2, 0, 8, 7), 3);
+  assert.equal(move(8, "ArrowRight", 2, 0, 8, 7), 8);
+  assert.equal(move(2, "ArrowUp", 2, 0, 8, 7), 1);
+  assert.equal(move(0, "ArrowDown", 0, 3, 14, 7), 3);
+  assert.equal(move(4, "ArrowUp", 0, 3, 14, 7), 1);
+  assert.equal(move(10, "ArrowDown", 0, 0, 14, 7), 13);
 });
 
 test("clipboard rules, type detection and relay splitting follow PasteMemo behavior", () => {

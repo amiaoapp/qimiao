@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <title>启喵 / qimiao: porcelain cat, copper launch arrow</title>
+  <title>启喵 / Qimiao: porcelain cat, copper Q</title>
   <defs>
     <linearGradient id="ink" x1="0" y1="0" x2=".75" y2="1"><stop stop-color="#3D626F"/><stop offset=".55" stop-color="#244752"/><stop offset="1" stop-color="#142E38"/></linearGradient>
     <linearGradient id="porcelain" x2=".35" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".62" stop-color="#F0F1EA"/><stop offset="1" stop-color="#D6DFDC"/></linearGradient>
@@ -14,7 +14,13 @@
   <path d="m289 280 16 109 72-66Z M735 280l-16 109-72-66Z" fill="url(#ear)"/>
   <path d="M306 419C264 486 274 594 333 648M691 696C599 755 432 756 343 691" fill="none" stroke="#A8BABA" stroke-opacity=".45" stroke-width="4" stroke-linecap="round"/>
   <path d="M411 328Q512 303 613 328" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
-  <path d="m382 598 161-161H445v-62h203v203h-62v-98L426 642Z" fill="#6B342B" opacity=".14" transform="translate(0 7)"/>
-  <path d="m382 598 161-161H445v-62h203v203h-62v-98L426 642Z" fill="url(#copper)"/>
-  <path d="M449 379h194v194" fill="none" stroke="#F0BD98" stroke-width="3" stroke-opacity=".7"/>
+  <g fill="#6B342B" opacity=".14" transform="translate(0 7)">
+    <path fill-rule="evenodd" d="M512 374C429 374 372 432 372 513S429 652 512 652 652 594 652 513 595 374 512 374ZM512 432C560 432 592 464 592 513S560 594 512 594 432 562 432 513 464 432 512 432Z"/>
+    <path d="m547 548 100 100-41 41-100-100Z"/>
+  </g>
+  <g fill="url(#copper)">
+    <path fill-rule="evenodd" d="M512 374C429 374 372 432 372 513S429 652 512 652 652 594 652 513 595 374 512 374ZM512 432C560 432 592 464 592 513S560 594 512 594 432 562 432 513 464 432 512 432Z"/>
+    <path d="m547 548 100 100-41 41-100-100Z"/>
+  </g>
+  <path d="M388 486C399 418 450 383 511 383M550 555l87 88" fill="none" stroke="#F0BD98" stroke-width="3" stroke-opacity=".65" stroke-linecap="round"/>
 </svg>

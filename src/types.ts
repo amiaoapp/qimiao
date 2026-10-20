@@ -71,6 +71,8 @@ export type Settings = {
   confirmScanResults: boolean;
   scanDirs: string[];
   hotkey: string;
+  clipboardHotkey: string;
+  commandsHotkey: string;
   hideTray: boolean;
   autoStart: boolean;
   updateCheckSchedule: UpdateCheckSchedule;
@@ -99,6 +101,8 @@ export const defaultSettings: Settings = {
   confirmScanResults: false,
   scanDirs: [],
   hotkey: "Alt+Space",
+  clipboardHotkey: "CommandOrControl+Shift+V",
+  commandsHotkey: "CommandOrControl+Shift+K",
   hideTray: false,
   autoStart: false,
   updateCheckSchedule: "launch",

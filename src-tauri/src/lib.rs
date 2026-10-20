@@ -94,7 +94,7 @@ struct ExtensionBundleTicket {
     url: String,
 }
 struct ShortcutRuntime {
-    double_control: AtomicBool,
+    bindings: Mutex<Vec<(Shortcut, String, bool)>>,
     last_control: Mutex<Option<Instant>>,
 }
 
@@ -129,7 +129,7 @@ impl WindowRuntime {
 impl Default for ShortcutRuntime {
     fn default() -> Self {
         Self {
-            double_control: AtomicBool::new(false),
+            bindings: Mutex::new(Vec::new()),
             last_control: Mutex::new(None),
         }
     }
@@ -1786,7 +1786,15 @@ fn run_linux_system_action(action: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+async fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    let cloned = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || execute_window_action(cloned, action))
+        .await.map_err(|e| e.to_string())?;
+    if result.is_err() { show_launcher_mode(&app, "commands"); }
+    result
+}
+
+fn execute_window_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
     let action = match action.as_str() {
         "left" | "right" | "top" | "bottom" | "center" | "maximize" | "almost-maximize"
         | "maximize-width" | "maximize-height" => action,
@@ -1824,50 +1832,75 @@ fn run_window_action(app: tauri::AppHandle, action: String) -> Result<(), String
     }
     #[cfg(target_os = "windows")]
     {
-        let virtual_key = match action.as_str() {
-            "left" => "0x25",
-            "right" => "0x27",
-            "top" => "0x26",
-            "bottom" => "0x28",
-            _ => "0x26",
-        };
-        let alt = matches!(action.as_str(), "top" | "bottom");
-        if matches!(
-            action.as_str(),
-            "center" | "almost-maximize" | "maximize-width" | "maximize-height"
-        ) {
-            let mode = action.clone();
-            let script = format!("Add-Type -AssemblyName System.Windows.Forms;Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int z,bool p);public struct R{{public int L,T,Ri,B;}}}}';$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;$wa=[System.Windows.Forms.Screen]::FromHandle($h).WorkingArea;$x=$wa.X;$y=$wa.Y;$w=$wa.Width;$z=$wa.Height;$m='{mode}';if($m -eq 'center'){{$x+=[int]($w*.15);$y+=[int]($z*.15);$w=[int]($w*.7);$z=[int]($z*.7)}}elseif($m -eq 'almost-maximize'){{$x+=28;$y+=28;$w-=56;$z-=56}}elseif($m -eq 'maximize-width'){{$y=$r.T;$z=$r.B-$r.T}}else{{$x=$r.L;$w=$r.Ri-$r.L}};[W]::MoveWindow($h,$x,$y,$w,$z,$true)|Out-Null");
-            return hidden_windows_command("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                .spawn()
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-        }
+        // Actual work-area geometry is deterministic on Win10/11. Win+Alt+Up
+        // is not a top-half snap on all supported versions. Check OS errors
+        // rather than reporting success merely because PowerShell spawned.
         let script = format!(
-            "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QK{{[DllImport(\"user32.dll\")]public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);}}';[QK]::keybd_event(0x5B,0,0,[UIntPtr]::Zero);{}[QK]::keybd_event({virtual_key},0,0,[UIntPtr]::Zero);[QK]::keybd_event({virtual_key},0,2,[UIntPtr]::Zero);{}[QK]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)",
-            if alt { "[QK]::keybd_event(0x12,0,0,[UIntPtr]::Zero);" } else { "" },
-            if alt { "[QK]::keybd_event(0x12,0,2,[UIntPtr]::Zero);" } else { "" },
+            r#"$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms;
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class QW{{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int z,bool p);[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int n);public struct R{{public int L,T,Ri,B;}}}}';
+$h=[QW]::GetForegroundWindow(); if($h -eq [IntPtr]::Zero){{throw 'No active window'}};
+$m='{action}'; if($m -eq 'maximize'){{[QW]::ShowWindow($h,3)|Out-Null;exit 0}};
+[QW]::ShowWindow($h,9)|Out-Null;$r=New-Object QW+R;if(-not [QW]::GetWindowRect($h,[ref]$r)){{throw 'Cannot read active window'}};
+$wa=[System.Windows.Forms.Screen]::FromHandle($h).WorkingArea;$x=$wa.X;$y=$wa.Y;$w=$wa.Width;$z=$wa.Height;
+switch($m){{
+'left' {{$w=[int][Math]::Floor($w/2)}}
+'right' {{$half=[int][Math]::Floor($w/2);$x+=$half;$w-=$half}}
+'top' {{$z=[int][Math]::Floor($z/2)}}
+'bottom' {{$half=[int][Math]::Floor($z/2);$y+=$half;$z-=$half}}
+'center' {{$w=[Math]::Min($r.Ri-$r.L,$wa.Width);$z=[Math]::Min($r.B-$r.T,$wa.Height);$x+=[int](($wa.Width-$w)/2);$y+=[int](($wa.Height-$z)/2)}}
+'almost-maximize' {{$x+=28;$y+=28;$w-=56;$z-=56}}
+'maximize-width' {{$y=$r.T;$z=$r.B-$r.T}}
+'maximize-height' {{$x=$r.L;$w=$r.Ri-$r.L}}
+}};
+if(-not [QW]::MoveWindow($h,$x,$y,[Math]::Max(1,$w),[Math]::Max(1,$z),$true)){{throw 'Cannot resize active window; check permissions'}}"#
         );
-        return hidden_windows_command("powershell")
+        let mut command = hidden_windows_command("powershell.exe");
+        command
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string());
+            ;
+        return finish_system_command(command);
     }
     #[cfg(target_os = "linux")]
     {
-        let keys = match action.as_str() {
-            "left" => "super+Left",
-            "right" => "super+Right",
-            "bottom" => "super+Down",
-            _ => "super+Up",
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            return Err("Wayland 不允许通用窗口控制，请使用桌面环境的窗口快捷键".into());
+        }
+        // X11/EWMH work area includes panel/dock offsets. Do not silently
+        // map unimplemented actions to maximize.
+        let read = |program: &str, args: &[&str]| -> Result<String, String> {
+            let output = Command::new(program).args(args).output().map_err(|e| format!("需要安装 {program}: {e}"))?;
+            if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).into_owned()); }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
         };
-        Command::new("xdotool")
-            .args(["key", keys])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        let id = read("xdotool", &["getactivewindow"])?;
+        let desktops = read("wmctrl", &["-d"])?;
+        let current = desktops.lines().find(|line| line.split_whitespace().nth(1) == Some("*")).ok_or("无法读取桌面工作区")?;
+        let fields: Vec<_> = current.split_whitespace().collect();
+        let offset = fields.iter().position(|field| *field == "WA:").ok_or("无法读取工作区尺寸")?;
+        let pair = |value: &str, separator: char| -> Result<(i32, i32), String> {
+            let (a, b) = value.split_once(separator).ok_or("无效的工作区尺寸")?;
+            Ok((a.parse().map_err(|_| "无效的工作区尺寸")?, b.parse().map_err(|_| "无效的工作区尺寸")?))
+        };
+        let (x, y) = pair(fields.get(offset + 1).ok_or("无法读取工作区位置")?, ',')?;
+        let (w, h) = pair(fields.get(offset + 2).ok_or("无法读取工作区尺寸")?, 'x')?;
+        let geometry = read("xdotool", &["getwindowgeometry", "--shell", &id])?;
+        let field = |key: &str| -> Result<i32, String> {
+            geometry.lines().find_map(|line| line.strip_prefix(&format!("{key}="))).and_then(|value| value.parse().ok()).ok_or_else(|| "无法读取窗口尺寸".into())
+        };
+        let (old_x, old_y, old_w, old_h) = (field("X")?, field("Y")?, field("WIDTH")?, field("HEIGHT")?);
+        let (px, py, pw, ph) = match action.as_str() {
+            "left" => (x, y, w / 2, h), "right" => (x + w / 2, y, w - w / 2, h),
+            "top" => (x, y, w, h / 2), "bottom" => (x, y + h / 2, w, h - h / 2),
+            "center" => (x + (w - old_w.min(w)) / 2, y + (h - old_h.min(h)) / 2, old_w.min(w), old_h.min(h)),
+            "almost-maximize" => (x + 28, y + 28, w - 56, h - 56),
+            "maximize-width" => (x, old_y, w, old_h), "maximize-height" => (old_x, y, old_w, h),
+            _ => (x, y, w, h),
+        };
+        let wm_id = format!("0x{:x}", id.parse::<u64>().map_err(|_| "无效的活动窗口 ID")?);
+        read("wmctrl", &["-ir", &wm_id, "-b", "remove,maximized_vert,maximized_horz"])?;
+        read("xdotool", &["windowsize", &id, &pw.max(1).to_string(), &ph.max(1).to_string()])?;
+        read("xdotool", &["windowmove", &id, &px.to_string(), &py.to_string()])?;
+        Ok(())
     }
 }
 
@@ -1906,7 +1939,17 @@ fn powershell_quote(value: &str) -> String {
 }
 
 #[tauri::command]
-fn run_custom_command(
+async fn run_custom_command(
+    program: String,
+    args: Vec<String>,
+    working_directory: Option<String>,
+    capture_output: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || execute_custom_command(program, args, working_directory, capture_output))
+        .await.map_err(|e| e.to_string())?
+}
+
+fn execute_custom_command(
     program: String,
     args: Vec<String>,
     working_directory: Option<String>,
@@ -2450,6 +2493,21 @@ fn hide_launcher(window: tauri::WebviewWindow) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
+fn centered_resize_origin(
+    position: tauri::PhysicalPosition<i32>,
+    old_size: tauri::PhysicalSize<u32>,
+    new_size: tauri::PhysicalSize<u32>,
+    area: Option<&tauri::PhysicalRect<i32, u32>>,
+) -> tauri::PhysicalPosition<i32> {
+    let mut x = position.x + (old_size.width as i64 - new_size.width as i64) as i32 / 2;
+    let mut y = position.y + (old_size.height as i64 - new_size.height as i64) as i32 / 2;
+    if let Some(area) = area {
+        x = x.clamp(area.position.x, area.position.x + area.size.width.saturating_sub(new_size.width) as i32);
+        y = y.clamp(area.position.y, area.position.y + area.size.height.saturating_sub(new_size.height) as i32);
+    }
+    tauri::PhysicalPosition::new(x, y)
+}
+
 #[tauri::command]
 fn set_window_layout(window: tauri::WebviewWindow, layout: String) -> Result<(), String> {
     let (width, height, min_width, min_height) = match layout.as_str() {
@@ -2465,13 +2523,14 @@ fn set_window_layout(window: tauri::WebviewWindow, layout: String) -> Result<(),
     let monitor = window
         .current_monitor()
         .map_err(|error| error.to_string())?;
+    let old_geometry = window.outer_position().ok().zip(window.outer_size().ok());
     let (width, height) = monitor
         .as_ref()
         .map(|monitor| {
             let scale = monitor.scale_factor();
             (
-                width.min(monitor.size().width as f64 / scale * 0.92),
-                height.min(monitor.size().height as f64 / scale * 0.88),
+                width.min(monitor.work_area().size.width as f64 / scale * 0.92),
+                height.min(monitor.work_area().size.height as f64 / scale * 0.88),
             )
         })
         .unwrap_or((width, height));
@@ -2484,8 +2543,12 @@ fn set_window_layout(window: tauri::WebviewWindow, layout: String) -> Result<(),
     window
         .set_size(tauri::LogicalSize::new(width, height))
         .map_err(|error| error.to_string())?;
-    // Keep the user's dragged position during in-app mode changes.
-    // show_launcher() restores the default centered, slightly lower position.
+    // Resize about the existing centre, not a top corner. Keep a dragged
+    // launcher on its current monitor and clamp it inside the work area.
+    if let (Some((position, old_size)), Ok(new_size)) = (old_geometry, window.outer_size()) {
+        let position = centered_resize_origin(position, old_size, new_size, monitor.as_ref().map(|m| m.work_area()));
+        window.set_position(position).map_err(|e| e.to_string())?;
+    }
     #[cfg(target_os = "windows")]
     apply_windows_rounded_region(&window).map_err(|error| error.to_string())?;
     Ok(())
@@ -2724,29 +2787,50 @@ fn refresh_windows_rounded_region(window: &tauri::Window) -> tauri::Result<()> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct ShortcutBinding {
+    target: String,
+    accelerator: String,
+}
+
+fn parse_shortcut_bindings(bindings: Vec<ShortcutBinding>) -> Result<Vec<(Shortcut, String, bool)>, String> {
+    let mut parsed: Vec<(Shortcut, String, bool)> = Vec::new();
+    for binding in bindings {
+        if !matches!(binding.target.as_str(), "apps" | "clipboard" | "commands") {
+            return Err("未知快捷键目标".into());
+        }
+        if binding.accelerator.trim().is_empty() { continue; }
+        let shortcut = shortcut_from_text(binding.accelerator.trim())?;
+        if parsed.iter().any(|(other, target, _)| other.id() == shortcut.id() || target == &binding.target) {
+            return Err("快捷键不能重复，请为不同功能设置不同组合键".into());
+        }
+        parsed.push((shortcut, binding.target, binding.accelerator == "DoubleControl"));
+    }
+    Ok(parsed)
+}
+
 #[tauri::command]
-fn set_global_shortcut(
+fn set_global_shortcuts(
     app: tauri::AppHandle,
     state: tauri::State<ShortcutRuntime>,
-    accelerator: String,
-    previous_accelerator: Option<String>,
+    bindings: Vec<ShortcutBinding>,
 ) -> Result<(), String> {
-    let shortcut = shortcut_from_text(&accelerator)?;
+    let parsed = parse_shortcut_bindings(bindings)?;
+    let mut current = state.bindings.lock().map_err(|e| e.to_string())?;
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| e.to_string())?;
-    if let Err(error) = app.global_shortcut().register(shortcut) {
-        if let Some(previous) = previous_accelerator
-            .as_deref()
-            .and_then(|s| shortcut_from_text(s).ok())
-        {
-            let _ = app.global_shortcut().register(previous);
+    for (shortcut, _, _) in &parsed {
+        if let Err(error) = app.global_shortcut().register(*shortcut) {
+            let _ = app.global_shortcut().unregister_all();
+            for (previous, _, _) in current.iter() {
+                let _ = app.global_shortcut().register(*previous);
+            }
+            return Err(format!("系统无法注册此快捷键：{error}"));
         }
-        return Err(format!("系统无法注册此快捷键：{error}"));
     }
-    state
-        .double_control
-        .store(accelerator == "DoubleControl", Ordering::Relaxed);
+    *current = parsed;
+    if let Ok(mut last) = state.last_control.lock() { *last = None; }
     Ok(())
 }
 
@@ -2764,8 +2848,8 @@ fn position_launcher(window: &tauri::WebviewWindow) {
     let Ok(size) = window.outer_size() else {
         return;
     };
-    let area = monitor.size();
-    let origin = monitor.position();
+    let area = monitor.work_area().size;
+    let origin = monitor.work_area().position;
     let x = origin.x + (area.width.saturating_sub(size.width) / 2) as i32;
     let y = origin.y + ((area.height.saturating_sub(size.height)) as f64 * 0.58) as i32;
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
@@ -2780,7 +2864,9 @@ fn start_launcher_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
 
-fn show_launcher(app: &tauri::AppHandle) {
+fn show_launcher(app: &tauri::AppHandle) { show_launcher_mode(app, "apps"); }
+
+pub(crate) fn show_launcher_mode(app: &tauri::AppHandle, mode: &str) {
     if let Some(w) = app.get_webview_window("main") {
         app.state::<WindowRuntime>()
             .protect_focus(Duration::from_millis(1200));
@@ -2789,7 +2875,7 @@ fn show_launcher(app: &tauri::AppHandle) {
         position_launcher(&w);
         let _ = w.show();
         let _ = w.set_focus();
-        let _ = app.emit("launcher-shown", ());
+        let _ = app.emit("launcher-shown", mode);
     }
 }
 
@@ -2857,7 +2943,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
         .items(&[&show, &settings, &update, &quit])
         .build()?;
     let tray = TrayIconBuilder::with_id("main-tray")
-        .tooltip("启喵")
+        .tooltip("启喵 · Qimiao")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .icon(colorful_tray_icon()?)
@@ -2916,10 +3002,13 @@ pub fn run() {
         )
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         let runtime = app.state::<ShortcutRuntime>();
-                        if runtime.double_control.load(Ordering::Relaxed) {
+                        let binding = runtime.bindings.lock().ok().and_then(|bindings|
+                            bindings.iter().find(|(key, _, _)| key.id() == shortcut.id()).cloned());
+                        let Some((_, target, double_control)) = binding else { return; };
+                        if double_control {
                             let Ok(mut last) = runtime.last_control.lock() else {
                                 return;
                             };
@@ -2932,7 +3021,7 @@ pub fn run() {
                             }
                             *last = None;
                         }
-                        toggle_launcher(app)
+                        if target == "apps" { toggle_launcher(app) } else { show_launcher_mode(app, &target) }
                     }
                 })
                 .build(),
@@ -2947,6 +3036,9 @@ pub fn run() {
             if let Err(_error) = app.global_shortcut().register(shortcut) {
                 #[cfg(target_os = "windows")]
                 log_windows_startup(&format!("initial shortcut registration failed: {_error}"));
+            }
+            if let Ok(mut bindings) = app.state::<ShortcutRuntime>().bindings.lock() {
+                *bindings = vec![(shortcut, "apps".into(), false)];
             }
             #[cfg(target_os = "macos")]
             app.handle()
@@ -3081,7 +3173,7 @@ pub fn run() {
             read_icon,
             load_app_icon,
             open_macos_permission,
-            set_global_shortcut,
+            set_global_shortcuts,
             suspend_global_shortcuts
         ])
         .run(tauri::generate_context!())
@@ -3251,7 +3343,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("qimiao-command-fixture-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
-        let output = run_custom_command(
+        let output = execute_custom_command(
             "printf '%s' \"$PWD\"".into(),
             Vec::new(),
             Some(root.to_string_lossy().into_owned()),
@@ -3266,7 +3358,7 @@ mod tests {
     }
     #[test]
     fn quotes_custom_command_arguments() {
-        let output = run_custom_command(
+        let output = execute_custom_command(
             "printf '%s'".into(),
             vec!["hello world's".into()],
             None,
@@ -3331,9 +3423,34 @@ mod tests {
             "CommandOrControl+Space",
             "CommandOrControl+Shift+Space",
             "Alt+Shift+Space",
+            "CommandOrControl+Shift+V",
+            "CommandOrControl+Shift+K",
         ] {
             assert!(value.parse::<Shortcut>().is_ok(), "{value}");
         }
+    }
+    #[test]
+    fn shortcut_bindings_route_independently_and_reject_duplicates() {
+        let binding = |target: &str, accelerator: &str| ShortcutBinding { target: target.into(), accelerator: accelerator.into() };
+        let parsed = parse_shortcut_bindings(vec![binding("apps", "DoubleControl"), binding("clipboard", "CommandOrControl+Shift+V"), binding("commands", "CommandOrControl+Shift+K")]).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed[0].2);
+        assert!(!parsed[1].2);
+        assert_eq!(parsed[1].1, "clipboard");
+        assert_ne!(parsed[0].0.id(), parsed[1].0.id());
+        assert!(parse_shortcut_bindings(vec![binding("apps", "Alt+Space"), binding("commands", "Alt+Space")]).is_err());
+        assert!(parse_shortcut_bindings(vec![binding("invalid", "Alt+Space")]).is_err());
+        assert_eq!(parse_shortcut_bindings(vec![binding("apps", "Alt+Space"), binding("commands", "")]).unwrap().len(), 1);
+    }
+    #[test]
+    fn resizing_keeps_the_midpoint_including_negative_monitor_coordinates() {
+        use tauri::{PhysicalPosition as P, PhysicalRect as R, PhysicalSize as S};
+        let compact = centered_resize_origin(P::new(300, 200), S::new(920, 600), S::new(680, 430), None);
+        assert_eq!(compact, P::new(420, 285));
+        assert_eq!(centered_resize_origin(compact, S::new(680, 430), S::new(920, 600), None), P::new(300, 200));
+        let area = R { position: P::new(-1920, 40), size: S::new(1920, 1040) };
+        assert_eq!(centered_resize_origin(P::new(-1500, 200), S::new(920, 600), S::new(680, 430), Some(&area)), P::new(-1380, 285));
+        assert_eq!(centered_resize_origin(P::new(-1900, 40), S::new(680, 430), S::new(920, 600), Some(&area)), P::new(-1920, 40));
     }
     #[cfg(any())]
     #[test]

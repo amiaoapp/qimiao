@@ -82,33 +82,35 @@
 }
 .clip-body {
   display: grid;
-  grid-template-columns: 145px minmax(190px, 0.9fr) minmax(240px, 1fr);
+  grid-template-columns: minmax(245px, 0.95fr) minmax(260px, 1.05fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 .clip-sidebar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 3px;
   margin: 0;
-  padding: 10px 8px;
-  overflow: auto;
-  border-right: 1px solid var(--border);
+  padding: 8px 12px;
+  overflow-x: auto;
+  flex: none;
+  border-bottom: 1px solid var(--border);
 }
 .clip-sidebar button {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  width: 100%;
+  gap: 5px;
+  padding: 7px 11px;
+  width: auto;
   height: 32px;
   min-height: 32px;
   flex: none;
   text-align: left;
   color: var(--muted);
   border: 0;
-  border-radius: 8px;
+  border-radius: 16px;
   background: transparent;
   font-size: 12px;
 }
@@ -125,8 +127,10 @@
 }
 .clip-sidebar hr {
   border: 0;
-  border-top: 1px solid var(--border);
-  margin: 10px 4px;
+  border-left: 1px solid var(--border);
+  height: 16px;
+  flex: none;
+  margin: 0 4px;
 }
 .clip-list {
   overflow: auto;
@@ -176,7 +180,7 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   white-space: pre-line;
   overflow-wrap: anywhere;
@@ -184,7 +188,7 @@
 }
 .clip-entry-copy small {
   display: block;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
   white-space: nowrap;
@@ -506,7 +510,7 @@
 }
 @media (max-width: 800px) {
   .clip-body {
-    grid-template-columns: 110px minmax(150px, 0.9fr) minmax(180px, 1fr);
+    grid-template-columns: minmax(205px, .9fr) minmax(240px, 1fr);
   }
   .clip-sidebar button {
     padding: 8px 5px;
@@ -531,7 +535,8 @@
 }
 @media (max-width: 580px) {
   .clip-body {
-    grid-template-columns: 85px minmax(120px, 1fr);
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(100px, 1fr) minmax(100px, 1fr);
   }
   .clip-detail {
     grid-column: 1/-1;
@@ -545,4 +550,51 @@
   .dav-form {
     grid-template-columns: 1fr;
   }
+}
+
+.clip-toolbar { flex: none; padding-block: 5px; }
+.clip-sidebar button:focus-visible, .clip-entry:focus-visible,
+.clip-context-menu button:focus-visible, .clip-paste-bar button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.clip-sidebar button:hover { background: var(--hover); color: var(--text); }
+.clip-sidebar small { font-size: 10px; opacity: .7; }
+.clip-entry-symbol { background: var(--hover); border-radius: 9px; width: 40px; height: 40px; }
+.clip-entry-symbol img { max-width: 40px; max-height: 40px; }
+.clip-legacy-actions { display: none; }
+.clip-extra-actions { margin-top: 14px; font-size: 12px; }
+.clip-extra-actions summary { cursor: pointer; color: var(--muted); padding-block: 5px; }
+.clip-extra-actions .clip-transforms { margin-top: 12px; }
+.clip-link-preview { width: 100%; }
+.clip-link-protocol { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.clip-link-protocol small { margin-left: auto; background: var(--hover); padding: 4px 7px; border-radius: 6px; }
+.clip-link-preview h3 { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 16px 0 10px; }
+.clip-link-preview p { color: var(--accent); overflow-wrap: anywhere; line-height: 1.6; font-size: 12px; margin: 0 0 18px; }
+.clip-file-preview { display: grid; gap: 8px; width: 100%; }
+.clip-file-preview button { justify-content: flex-start !important; }
+.clip-file-preview button span { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.clip-file-preview button svg { flex: none; }
+.clip-paste-bar { border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; flex: none; }
+.clip-paste-hint { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.clip-paste-bar > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.clip-paste-bar kbd { font: inherit; font-size: 10px; opacity: .65; }
+.clip-footer { padding-block: 5px; min-height: 26px; flex: none; }
+.clip-footer > span:first-child { display: none; }
+.clip-context-menu { position: fixed; z-index: 65; width: 232px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: 13px; background: var(--dialog-bg, #fafbfc); box-shadow: 0 12px 40px #0003; color: var(--text); }
+:root[data-appearance="dark"] .clip-context-menu { --dialog-bg: #25292f; }
+.clip-context-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 35px; padding: 8px 10px; text-align: left; font: inherit; font-size: 12px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.clip-context-menu button:hover, .clip-context-menu button:focus-visible { background: var(--hover); }
+.clip-context-menu button:disabled { opacity: .4; cursor: not-allowed; }
+.clip-context-menu .danger { color: #df4a50; }
+.clip-context-menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 6px; }
+.clip-group-form { padding: 5px; display: flex; flex-wrap: wrap; gap: 6px; }
+.clip-group-form input { width: 100%; min-width: 0; padding: 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--text); background: var(--card); font-size: 12px; }
+.clip-group-form button { background: var(--selection); border: 0; border-radius: 6px; padding: 6px 10px; color: var(--text); }
+@media (max-width: 800px) {
+  .clip-paste-hint { display: none; }
+  .clip-paste-bar { justify-content: center; }
+}
+@media (max-width: 580px) {
+  .clip-paste-bar .secondary span { display: none; }
+  .clip-paste-bar > div { justify-content: center; }
 }

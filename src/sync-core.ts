@@ -31,6 +31,9 @@ export function normalizeSettings(stored: Partial<Settings>): Settings {
   return {
     ...defaultSettings,
     ...stored,
+    hotkey: typeof stored.hotkey === "string" && stored.hotkey.trim() ? stored.hotkey : defaultSettings.hotkey,
+    clipboardHotkey: typeof stored.clipboardHotkey === "string" ? stored.clipboardHotkey : defaultSettings.clipboardHotkey,
+    commandsHotkey: typeof stored.commandsHotkey === "string" ? stored.commandsHotkey : defaultSettings.commandsHotkey,
     webdav: dav,
     clipboardOptions: {
       retentionDays: finite(raw?.retentionDays, 30, 0, 3650),

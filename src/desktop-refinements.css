@@ -19,6 +19,179 @@
   right: 10px;
 }
 
+/* WebView2 has no Apple NSGlassEffectView. Keep Windows liquid glass visibly
+   distinct with a lighter refractive surface instead of aliasing it to frost. */
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell {
+  background:
+    linear-gradient(132deg, rgba(255, 255, 255, 0.66), rgba(229, 236, 246, 0.42) 48%, rgba(252, 253, 255, 0.54)),
+    rgba(235, 240, 247, 0.46) !important;
+  backdrop-filter: blur(18px) saturate(155%) contrast(103%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(155%) contrast(103%) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.62),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92) !important;
+}
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell::before,
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  inset: 1px;
+  pointer-events: none;
+  border-radius: 5px;
+}
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell::before {
+  z-index: 0;
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(255, 255, 255, 0.58), transparent 34%),
+    linear-gradient(112deg, rgba(255, 255, 255, 0.18), transparent 28%, rgba(255, 255, 255, 0.12) 72%, transparent);
+}
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell::after {
+  z-index: 0;
+  box-shadow: inset 0 0 22px rgba(255, 255, 255, 0.2);
+}
+:root[data-platform="windows"][data-material="liquid"] .launcher-shell > .content {
+  position: relative;
+  z-index: 1;
+}
+:root[data-platform="windows"][data-appearance="dark"][data-material="liquid"] .launcher-shell {
+  background:
+    linear-gradient(135deg, rgba(61, 66, 78, 0.7), rgba(29, 33, 42, 0.58) 50%, rgba(50, 54, 66, 0.66)),
+    rgba(31, 35, 44, 0.58) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+:root[data-platform="windows"][data-appearance="dark"][data-material="liquid"] .launcher-shell::before {
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(255, 255, 255, 0.16), transparent 35%),
+    linear-gradient(112deg, rgba(255, 255, 255, 0.07), transparent 32%, rgba(255, 255, 255, 0.05) 72%, transparent);
+}
+
+/* Commands and applications share one scroll flow during mixed searches.
+   Natural row heights prevent the application icons from overflowing a
+   compressed four-row grid. */
+.library.launchpad.has-mixed-results {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 3px;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+.has-mixed-results .system-candidates {
+  max-height: 156px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.has-mixed-results .grid.app-library {
+  flex: none;
+  height: auto;
+  min-height: 0;
+  grid-template-rows: none !important;
+  grid-auto-rows: 104px;
+  overflow: visible;
+}
+.list-layout .has-mixed-results .list.app-library {
+  flex: none;
+  overflow: visible;
+}
+.has-mixed-results .launcher-footer {
+  flex: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-platform="windows"][data-material="liquid"] .launcher-shell {
+    background: #f1f3f6 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  :root[data-platform="windows"][data-appearance="dark"][data-material="liquid"] .launcher-shell {
+    background: #252830 !important;
+  }
+  :root[data-platform="windows"][data-material="liquid"] .launcher-shell::before,
+  :root[data-platform="windows"][data-material="liquid"] .launcher-shell::after {
+    display: none !important;
+  }
+}
+
+/* The shelf keeps seven slots; a favorites stack leaves six for suggestions.
+   Its popover shares the context-menu layer (9) and never resizes the grid. */
+.launcher-shelf {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: calc((100cqh - 98px) / 4);
+  margin-bottom: 5px;
+}
+.launcher-shelf > .recommend-grid {
+  height: 100%;
+  margin-bottom: 0;
+  overflow: visible;
+}
+.pinned-stack { position: relative; min-width: 0; height: 100%; }
+.pinned-stack-toggle { width: 100%; height: 100%; }
+.pinned-stack-toggle .app-meta strong { display: flex; justify-content: center; align-items: center; gap: 3px; }
+.pinned-stack-toggle[aria-expanded="true"] .app-meta svg { transform: rotate(180deg); }
+.launchpad .pinned-stack-preview { display: block; overflow: visible; background: transparent; box-shadow: none; }
+.pinned-stack-preview .result-app-glyph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--control-edge);
+  border-radius: 25%;
+  background: var(--panel);
+  box-shadow: 0 3px 7px rgba(25, 32, 48, .12);
+}
+.pinned-stack-preview .result-app-glyph:nth-child(1) { transform: translate(7px, -5px) rotate(9deg) scale(.88); }
+.pinned-stack-preview .result-app-glyph:nth-child(2) { transform: translate(3px, -2px) rotate(4deg) scale(.94); }
+.pinned-stack-preview .result-app-glyph img { width: 100%; height: 100%; object-fit: contain; }
+.pinned-stack-count {
+  position: absolute;
+  right: -7px;
+  bottom: -3px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 10px;
+  font-weight: 600;
+}
+.pinned-stack-panel {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% - 5px);
+  left: 0;
+  width: min(420px, calc(100vw - 72px));
+  max-height: min(320px, 48dvh);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border: 1px solid var(--control-edge);
+  border-radius: 17px;
+  background: var(--panel);
+  box-shadow: var(--float-shadow);
+}
+.pinned-stack-panel > header { display: flex; flex: none; align-items: center; justify-content: space-between; height: 30px; margin: 0 2px 7px; }
+.pinned-stack-panel > header strong { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.pinned-stack-panel > header small { color: var(--muted); font-weight: 400; }
+.pinned-stack-panel > header button { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 7px; color: var(--muted); }
+.pinned-stack-panel > header button:hover { background: var(--hover); }
+.pinned-stack-apps { min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 3px; scrollbar-width: thin; }
+.launchpad .pinned-stack-apps .app-card { height: 82px; padding: 8px 3px; gap: 7px; }
+.pinned-stack-apps .result-app-glyph { width: 40px; height: 40px; flex: none; }
+.pinned-stack-apps .app-card:focus-visible { outline-offset: -2px; }
+.list-layout .launcher-shelf { height: 77px; }
+.list-layout .launcher-shelf .recommend-grid > .app-card,
+.list-layout .pinned-stack-toggle { padding: 4px 3px; gap: 5px; }
+.list-layout .launcher-shelf .app-icon { width: 32px; height: 32px; }
+.list-layout .launcher-shelf .app-meta strong { font-size: 10px; }
+
 /* Compact mode is a launcher palette, not a miniature app grid. */
 :root[data-layout="compact"],
 :root[data-layout="compact"] body,
@@ -469,3 +642,7 @@
     padding: 20px 13px 8px;
   }
 }
+/* Command feedback and output stay inside the existing launcher surfaces. */
+.command-status { padding: 9px 16px; margin: 0; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.command-output pre { max-height: 55dvh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; }
+.command-results > button:disabled { opacity: .55; cursor: progress; }

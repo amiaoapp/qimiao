@@ -390,7 +390,7 @@ pub async fn paste_clipboard_item(
         Ok(())
     }).await.map_err(|_| "粘贴任务失败")?;
     if result.is_err() {
-        crate::show_launcher(&app);
+        crate::show_launcher_mode(&app, "clipboard");
     }
     result
 }

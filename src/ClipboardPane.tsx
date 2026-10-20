@@ -31,6 +31,11 @@ import {
   X,
   ShieldCheck,
   ArrowRight,
+  MoreHorizontal,
+  ExternalLink,
+  Archive,
+  AppWindow,
+  Folder,
 } from "lucide-react";
 import {
   clipKindLabels,
@@ -42,7 +47,8 @@ import {
   type Clip,
   type ClipKind,
 } from "./clipboard-core";
-import { copyClip, exportClip, syncDavImage } from "./tauri";
+import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText } from "./tauri";
+import { clipboardCategory, clipRelativeTime, clipLink } from "./clipboard-view";
 import type { Settings } from "./types";
 import "./clipboard.css";
 
@@ -105,6 +111,9 @@ export default function ClipboardPane({
     }
   });
   const [delimiter, setDelimiter] = useState("\n");
+  const [context, setContext] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [groupEditor, setGroupEditor] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const active = useMemo(() => clips.filter((c) => !c.deletedAt), [clips]);
   const groups = [
     ...new Set(
@@ -120,6 +129,7 @@ export default function ClipboardPane({
             (filter === "pinned" && c.pinned) ||
             (filter === "favorite" && c.favorite) ||
             filter === c.kind ||
+            filter === clipboardCategory(c) ||
             filter === `group:${c.group}`,
         )
         .filter(
@@ -131,12 +141,42 @@ export default function ClipboardPane({
         )
         .sort(
           (a, b) =>
-            Number(b.pinned) - Number(a.pinned) ||
+            Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
             (b.lastUsedAt ?? b.createdAt) - (a.lastUsedAt ?? a.createdAt),
         ),
     [active, filter, query],
   );
   const item = visible.find((c) => c.id === selected) ?? visible[0];
+  const contextItem = active.find((c) => c.id === context?.id);
+  const link = item?.kind === "link" ? clipLink(item.text) : null;
+  useEffect(() => { setContext(null); }, [filter, query]);
+  useEffect(() => {
+    if (!context) return;
+    const menu = menuRef.current;
+    const bounds = menu?.getBoundingClientRect();
+    if (menu && bounds) {
+      menu.style.left = `${Math.max(8, Math.min(context.x, window.innerWidth - bounds.width - 8))}px`;
+      menu.style.top = `${Math.max(8, Math.min(context.y, window.innerHeight - bounds.height - 8))}px`;
+      menu.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+    const outside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setContext(null);
+    };
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopImmediatePropagation(); setContext(null);
+        selectedRef.current?.focus();
+      } else if (["ArrowDown", "ArrowUp", "Tab"].includes(event.key) && !(event.target as Element).closest("input")) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        buttons[(index + (event.key === "ArrowUp" || event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    window.addEventListener("keydown", keyboard, true);
+    return () => { document.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", keyboard, true); };
+  }, [context, groupEditor]);
   const queueItems = queue
     .map((id) => active.find((c) => c.id === id))
     .filter((c): c is Clip => Boolean(c));
@@ -202,7 +242,7 @@ export default function ClipboardPane({
     const key = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229 || imeActive()) return;
       if (
-        editor ||
+        context || editor ||
         clear ||
         preferences ||
         document.querySelector("[data-local-dialog]")
@@ -237,7 +277,10 @@ export default function ClipboardPane({
         if (c) void perform(c, true);
       } else if (event.key === "Enter" && item) {
         event.preventDefault();
-        void perform(item, true, event.altKey, event.shiftKey);
+        void perform(item, true, event.altKey || event.metaKey || event.ctrlKey, event.shiftKey);
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && item) {
+        event.preventDefault();
+        setGroupEditor(false); setContext({ id: item.id, x: window.innerWidth - 270, y: window.innerHeight - 420 });
       }
     };
     window.addEventListener("keydown", key);
@@ -246,9 +289,9 @@ export default function ClipboardPane({
   function addQueue(c: Clip) {
     setQueue((q) => (q.includes(c.id) ? q : [...q, c.id]));
   }
-  function split() {
-    if (!item) return;
-    const parts = splitRelayText(item.text, delimiter);
+  function split(clip = item) {
+    if (!clip) return;
+    const parts = splitRelayText(clip.text, delimiter);
     if (!parts.length) {
       showToast(en ? "No matching separator found" : "未找到可拆分的分隔符");
       return;
@@ -456,16 +499,15 @@ export default function ClipboardPane({
           </button>
         </div>
       ) : (
-        <div className="clip-body">
+        <>
           <nav
             className="clip-sidebar"
             aria-label={en ? "Clipboard filters" : "剪贴板筛选"}
           >
             {(
               [
-                ["all", Clipboard, en ? "All entries" : "全部记录"],
                 ["pinned", Pin, en ? "Pinned" : "置顶"],
-                ["favorite", Star, en ? "Favorites" : "收藏"],
+                ["all", Clipboard, en ? "All" : "全部"],
               ] as const
             ).map(([id, Icon, label]) => (
               <button
@@ -477,8 +519,7 @@ export default function ClipboardPane({
                 <span>{label}</span>
               </button>
             ))}
-            <hr />
-            {(Object.keys(clipKindLabels) as ClipKind[]).map((kind) => {
+            {(["text", "code", "link", "image"] as ClipKind[]).map((kind) => {
               const Icon = icons[kind];
               return (
                 <button
@@ -488,22 +529,20 @@ export default function ClipboardPane({
                 >
                   <Icon size={16} />
                   <span>{clipKindLabels[kind][en ? 1 : 0]}</span>
-                  <small>{active.filter((c) => c.kind === kind).length}</small>
                 </button>
               );
             })}
-            {groups.length > 0 && <hr />}
-            {groups.map((group) => (
-              <button
-                key={group}
-                className={filter === `group:${group}` ? "active" : ""}
-                onClick={() => setFilter(`group:${group}`)}
-              >
-                <Hash size={16} />
-                <span>{group}</span>
-              </button>
+            {([["document", File, en ? "Documents" : "文档"], ["archive", Archive, en ? "Archives" : "压缩包"], ["application", AppWindow, en ? "Apps" : "应用"], ["other", Folder, en ? "Other files" : "其他文件"]] as const).map(([id, Icon, label]) => (
+              <button key={id} aria-pressed={filter === id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}><Icon size={16}/><span>{label}</span></button>
             ))}
+            <select aria-label={en ? "More filters and groups" : "更多分类与分组"} value={["favorite", "color", "email", "phone", "file"].includes(filter) || filter.startsWith("group:") ? filter : ""} onChange={(event) => setFilter(event.target.value || "all")}>
+              <option value="">{en ? "More / groups" : "更多 / 分组"}</option>
+              <option value="favorite">{en ? "Favorites" : "收藏"}</option>
+              {(["color", "email", "phone", "file"] as ClipKind[]).map((kind) => <option key={kind} value={kind}>{clipKindLabels[kind][en ? 1 : 0]}</option>)}
+              {groups.map((group) => <option key={group} value={`group:${group}`}>{group}</option>)}
+            </select>
           </nav>
+          <div className="clip-body">
           <div
             className="clip-list"
             role="listbox"
@@ -525,6 +564,10 @@ export default function ClipboardPane({
                     className={`clip-entry ${item?.id === c.id ? "selected" : ""}`}
                     onClick={() => setSelected(c.id)}
                     onDoubleClick={() => void perform(c, true)}
+                    onContextMenu={(event) => {
+                      event.preventDefault(); setSelected(c.id); setGroupEditor(false);
+                      setContext({ id: c.id, x: event.clientX, y: event.clientY });
+                    }}
                   >
                     <span className="clip-entry-symbol">
                       {c.kind === "image" && c.thumbnail && !c.sensitive ? (
@@ -535,12 +578,11 @@ export default function ClipboardPane({
                     </span>
                     <span className="clip-entry-copy">
                       <strong>
-                        {c.title ||
-                          (c.sensitive
+                        {c.sensitive
                             ? en
                               ? "Sensitive content"
                               : "敏感内容"
-                            : c.kind === "image"
+                            : c.title || (c.kind === "image"
                               ? `${en ? "Image" : "图片"} ${c.width ?? ""} × ${c.height ?? ""}`
                               : c.kind === "file"
                                 ? c.files
@@ -550,14 +592,14 @@ export default function ClipboardPane({
                       </strong>
                       <small>
                         {c.sourceApp || clipKindLabels[c.kind][en ? 1 : 0]} ·{" "}
-                        {new Date(c.createdAt).toLocaleDateString()}{" "}
+                        {clipRelativeTime(c.createdAt, en)}{" "}
                         {c.group ? `· ${c.group}` : ""}
                       </small>
                     </span>
                     <span className="clip-entry-flags">
                       {c.pinned && <Pin size={12} />}{" "}
                       {c.favorite && <Star size={12} />}{" "}
-                      {index < 9 && <kbd>{index + 1}</kbd>}
+                      {index < 9 && <kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}{index + 1}</kbd>}
                     </span>
                   </button>
                 );
@@ -589,7 +631,7 @@ export default function ClipboardPane({
             {item ? (
               <>
                 <header>
-                  <span>{clipKindLabels[item.kind][en ? 1 : 0]}</span>
+                  <span>{link && !previewHidden ? link.hostname : clipKindLabels[item.kind][en ? 1 : 0]}</span>
                   <div>
                     <button
                       className={`clip-icon-button ${item.pinned ? "active" : ""}`}
@@ -662,7 +704,14 @@ export default function ClipboardPane({
                       <pre>{item.text}</pre>
                     </>
                   ) : item.kind === "file" ? (
-                    <pre>{item.files?.join("\n")}</pre>
+                    <div className="clip-file-preview">{item.files?.map((path) => <button className="secondary" key={path} title={path} onClick={() => void openPath(path).catch((error) => showToast(String(error)))}><File size={18}/><span>{path.split(/[\\/]/).pop()}</span><ExternalLink size={14}/></button>)}</div>
+                  ) : link ? (
+                    <div className="clip-link-preview">
+                      <span className="clip-link-protocol"><Link size={20}/>{link.hostname}<small>{link.protocol.slice(0, -1).toUpperCase()}</small></span>
+                      <h3>{item.title || link.hostname}</h3>
+                      <p>{item.text}</p>
+                      <button className="secondary" onClick={() => void openExternalUrl(link.href).catch((error) => showToast(String(error)))}><ExternalLink size={15}/>{en ? "Open in browser" : "在浏览器中打开"}</button>
+                    </div>
                   ) : (
                     <pre className={item.kind === "code" ? "clip-code" : ""}>
                       {item.text}
@@ -684,7 +733,7 @@ export default function ClipboardPane({
                       : `${item.text.length} ${en ? "characters" : "字符"}`}
                   </dd>
                 </dl>
-                <div className="clip-actions">
+                <div className="clip-actions clip-legacy-actions">
                   <button
                     className="primary"
                     disabled={controlsDisabled}
@@ -721,6 +770,7 @@ export default function ClipboardPane({
                     {en ? "Paste + Enter" : "粘贴并回车"}
                   </button>
                 </div>
+                <details className="clip-extra-actions"><summary>{en ? "More actions & text tools" : "更多操作与文本处理"}</summary>
                 <div className="clip-actions">
                   <button className="secondary" onClick={() => addQueue(item)}>
                     <ListOrdered size={16} />
@@ -827,13 +877,14 @@ export default function ClipboardPane({
                             onChange={(e) => setDelimiter(e.target.value)}
                           />
                         )}
-                        <button className="secondary" onClick={split}>
+                        <button className="secondary" onClick={() => split()}>
                           {en ? "Split" : "拆分"}
                         </button>
                       </div>
                     </label>
                   </div>
                 )}
+                </details>
               </>
             ) : (
               <div className="clip-empty">
@@ -842,7 +893,17 @@ export default function ClipboardPane({
             )}
           </article>
         </div>
+        </>
       )}
+      <div className="clip-paste-bar">
+        <span className="clip-paste-hint">{en ? `${visible.length} entries · ↑↓ select` : `${visible.length} 条记录 · ↑↓ 选择`}</span>
+        <div>
+          <button className="primary" disabled={controlsDisabled} onClick={() => item && void perform(item, true)}><kbd>↵</kbd>{en ? "Paste" : "粘贴"}</button>
+          <button className="secondary" disabled={controlsDisabled} title={en ? "Sends Enter to the target app after pasting" : "粘贴后会在目标应用中按回车，请确认内容"} onClick={() => item && void perform(item, true, false, true)}><kbd>⇧↵</kbd>{en ? "Paste + Enter" : "粘贴并回车"}</button>
+          <button className="secondary" disabled={controlsDisabled} onClick={() => item && void perform(item, true, true)}><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}↵</kbd>{en ? "Plain text" : "纯文本粘贴"}</button>
+          <button className="secondary" disabled={controlsDisabled} aria-label={en ? "Quick actions" : "快捷操作"} aria-expanded={Boolean(context)} onClick={(event) => { if (!item) return; const rect = event.currentTarget.getBoundingClientRect(); setGroupEditor(false); setContext(context ? null : { id: item.id, x: rect.right - 230, y: rect.top - 400 }); }}><MoreHorizontal size={17}/><span>{en ? "Actions" : "快捷操作"}</span></button>
+        </div>
+      </div>
       <footer className="clip-footer">
         <span>
           <kbd>↑</kbd>
@@ -877,6 +938,24 @@ export default function ClipboardPane({
           )}
         </span>
       </footer>
+      {context && contextItem && <div ref={menuRef} className="clip-context-menu" role="menu" aria-label={en ? "Clipboard actions" : "剪贴板操作"} style={{ left: context.x, top: context.y }}>
+        <button role="menuitem" disabled={working} onClick={() => { setContext(null); void perform(contextItem); }}><Copy size={16}/>{en ? "Copy" : "复制"}</button>
+        <button role="menuitem" onClick={() => { patch(contextItem.id, { pinned: !contextItem.pinned }); setContext(null); }}><Pin size={16}/>{contextItem.pinned ? (en ? "Unpin" : "取消置顶") : (en ? "Pin" : "置顶")}</button>
+        <button role="menuitem" onClick={() => { patch(contextItem.id, { sensitive: !contextItem.sensitive }); setRevealed(""); setContext(null); }}><ShieldCheck size={16}/>{contextItem.sensitive ? (en ? "Unmark sensitive" : "取消敏感标记") : (en ? "Mark sensitive" : "标记为敏感")}</button>
+        <hr/>
+        <button role="menuitem" onClick={() => setGroupEditor(!groupEditor)}><Folder size={16}/>{en ? "Move to group" : "移入分组"}<ArrowRight size={13}/></button>
+        {groupEditor && <form className="clip-group-form" onSubmit={(event) => { event.preventDefault(); const group = new FormData(event.currentTarget).get("group") as string; patch(contextItem.id, { group: group.trim().slice(0, 80) || undefined }); setContext(null); }}>
+          <input autoFocus name="group" defaultValue={contextItem.group ?? ""} list="clip-groups" maxLength={80} placeholder={en ? "Group name (empty to remove)" : "分组名，留空移出分组"} aria-label={en ? "Group name" : "分组名称"}/>
+          <datalist id="clip-groups">{groups.map((group) => <option key={group} value={group}/>)}</datalist>
+          <button type="submit">{en ? "Save" : "保存"}</button>
+        </form>}
+        <button role="menuitem" onClick={() => { addQueue(contextItem); setContext(null); }}><ListOrdered size={16}/>{en ? "Add to relay queue" : "加入接力队列"}</button>
+        <button role="menuitem" disabled={contextItem.kind === "image" || contextItem.kind === "file"} onClick={() => { split(contextItem); setContext(null); }}><Type size={16}/>{en ? "Split into relay" : "拆分并接力"}</button>
+        <hr/>
+        <button role="menuitem" onClick={() => { setContext(null); void setClipboardText(JSON.stringify({ kind: contextItem.kind, createdAt: contextItem.createdAt, characters: contextItem.text.length, files: contextItem.files?.length ?? 0, width: contextItem.width, height: contextItem.height, sensitive: Boolean(contextItem.sensitive), hasHtml: Boolean(contextItem.html), hasImage: Boolean(contextItem.imageKey) }, null, 2)).then(() => showToast(en ? "Diagnostics copied (content excluded)" : "已复制调试信息（不含内容）")).catch((error) => showToast(String(error))); }}><Code2 size={16}/>{en ? "Copy diagnostics" : "复制调试信息"}</button>
+        <hr/>
+        <button className="danger" role="menuitem" onClick={() => { remove(contextItem.id); setContext(null); }}><Trash2 size={16}/>{en ? "Delete" : "删除"}</button>
+      </div>}
       {(editor || clear) && (
         <div
           className="modal-shade"

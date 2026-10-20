@@ -18,7 +18,12 @@ export async function saveClipHistory(entries: Clip[]) {
 }
 export async function copyClip(clip: Clip, plain = false, paste = false, pressEnter = false) {
   if (isTauri()) await desktopInvoke(paste ? "paste_clipboard_item" : "copy_clipboard_item", { clip, plain, ...(paste ? { pressEnter } : {}) });
-  else if (navigator.clipboard) await navigator.clipboard.writeText(clip.text);
+  else {
+    if (paste) throw new Error("网页预览不能向其他应用粘贴，请使用桌面版 / Paste requires the desktop app");
+    if (!plain && (clip.kind === "image" || clip.kind === "file")) throw new Error("图片和文件复制请在桌面版中使用 / Use the desktop app");
+    if (!navigator.clipboard) throw new Error("浏览器未允许访问剪贴板 / Clipboard access unavailable");
+    await navigator.clipboard.writeText(clip.text);
+  }
 }
 export async function exportClip(clip: Clip): Promise<string | null> {
   if (isTauri()) return desktopInvoke("export_clipboard_item", { clip });
@@ -137,13 +142,14 @@ export async function hideLauncher() {
     await invoke("hide_launcher");
   }
 }
-export async function setGlobalHotkey(
-  accelerator: string,
-  previousAccelerator?: string,
-) {
+export async function setGlobalHotkeys(settings: Pick<import("./types").Settings, "hotkey" | "clipboardHotkey" | "commandsHotkey">) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_global_shortcut", { accelerator, previousAccelerator });
+    await invoke("set_global_shortcuts", { bindings: [
+      { target: "apps", accelerator: settings.hotkey },
+      { target: "clipboard", accelerator: settings.clipboardHotkey },
+      { target: "commands", accelerator: settings.commandsHotkey },
+    ] });
   }
 }
 export async function suspendGlobalHotkeys() {
@@ -243,13 +249,13 @@ export async function searchFiles(
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("search_files", { query, roots, limit });
   }
-  return [];
+  throw new Error("搜索本机文件请在桌面版中使用 / File search requires the desktop app");
 }
 export async function openPath(path: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("open_path", { path });
-  }
+  } else throw new Error("打开本机文件请在桌面版中使用 / Use the desktop app");
 }
 export async function listAppleShortcuts(): Promise<string[]> {
   if (isTauri()) {
@@ -262,19 +268,19 @@ export async function runAppleShortcut(name: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("run_apple_shortcut", { name });
-  }
+  } else throw new Error("运行快捷指令请在桌面版中使用 / Use the desktop app");
 }
 export async function runSystemAction(action: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("run_system_action", { action });
-  }
+  } else throw new Error("系统操作请在桌面版中使用 / System actions require the desktop app");
 }
 export async function runWindowAction(action: string) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("run_window_action", { action });
-  }
+  } else throw new Error("窗口管理请在桌面版中使用 / Window management requires the desktop app");
 }
 export async function runCustomCommand(
   program: string,
@@ -291,7 +297,7 @@ export async function runCustomCommand(
       captureOutput,
     });
   }
-  return "";
+  throw new Error("自定义命令请在桌面版中使用 / Custom commands require the desktop app");
 }
 const names = [
   "Arc",

@@ -60,7 +60,7 @@ import {
   readIcon,
   scanApps,
   setAutoStart,
-  setGlobalHotkey,
+  setGlobalHotkeys,
   setTrayVisible,
   setWindowMaterial,
   suspendGlobalHotkeys,
@@ -75,7 +75,11 @@ import CommandCenter from "./CommandCenter";
 import { parseCompatibleBackup } from "./tinycast-compat";
 import FontPicker from "./FontPicker";
 import { fontStackFor } from "./appearance";
-import { appPageLayout } from "./app-layout";
+import {
+  appPageLayout,
+  nextLauncherSelection,
+  type LauncherArrowKey,
+} from "./app-layout";
 import { useClipboardHistory } from "./useClipboardHistory";
 import ClipboardPane from "./ClipboardPane";
 import { useWebDav } from "./useWebDav";
@@ -83,6 +87,7 @@ import WebDavPanel from "./WebDavPanel";
 import { normalizeSettings, portableConfiguration, applyAppPreferences, type AppPreference, type PortableConfig } from "./sync-core";
 import CompactLauncher from "./CompactLauncher";
 import AppImporter from "./AppImporter";
+import PinnedStack from "./PinnedStack";
 import {launchWithImmediateHide,type CommonCommand,type RecentCommand} from "./compact-results";
 
 const load = <T,>(key: string, fallback: T): T => {
@@ -182,7 +187,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "0.9.12";
+const APP_VERSION = "1.0.0";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -225,6 +230,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("全部");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
+  const [pinsExpanded, setPinsExpanded] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<{
     version: string;
@@ -371,10 +377,10 @@ export default function App() {
       .catch(() => {});
   }, []);
   useEffect(() => {
-    setGlobalHotkey(settings.hotkey).catch(() =>
-      showToast("快捷键被系统或其他应用占用"),
+    setGlobalHotkeys(settings).catch((error) =>
+      showToast(`快捷键注册失败：${String(error)}`),
     );
-  }, [settings.hotkey]);
+  }, [settings.hotkey, settings.clipboardHotkey, settings.commandsHotkey]);
   useEffect(() => persistApps(apps), [apps]);
   useEffect(() => save("qimiao-command-tools", commandTools), [commandTools]);
   useEffect(() => {
@@ -388,7 +394,15 @@ export default function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (document.querySelector(".hotkey-recorder.recording, .clip-context-menu")) return;
         if (document.querySelector(".font-dialog")) return;
+        if (document.querySelector(".pinned-stack-panel")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setPinsExpanded(false);
+          document.querySelector<HTMLButtonElement>(".pinned-stack-toggle")?.focus();
+          return;
+        }
         if (document.querySelector("[data-local-dialog]")) { (document.querySelector("[data-local-dialog] .clip-close") as HTMLButtonElement | null)?.click(); return; }
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -412,11 +426,12 @@ export default function App() {
     const key = (event: KeyboardEvent) => {
       if (
         page !== "home" ||
-        categoryManager || pendingSystemAction || clearConfirm || aboutOpen || importReview || appImporterOpen || compactLayout ||
+        categoryManager || pendingSystemAction || clearConfirm || aboutOpen || importReview || appImporterOpen || compactLayout || pinsExpanded ||
         event.key !== "Tab" ||
         event.metaKey || event.ctrlKey || event.altKey ||
         event.isComposing || composingRef.current
         || (event.target as Element)?.closest(".clipboard-workspace")
+        || document.querySelector("[data-local-dialog], .hotkey-recorder.recording")
       ) return;
       event.preventDefault();
       setMode((current) => {
@@ -429,7 +444,7 @@ export default function App() {
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [page, categoryManager, pendingSystemAction, clearConfirm, aboutOpen, importReview, appImporterOpen, compactLayout]);
+  }, [page, categoryManager, pendingSystemAction, clearConfirm, aboutOpen, importReview, appImporterOpen, compactLayout, pinsExpanded]);
   useEffect(() => {
     const blockNativeMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -445,6 +460,7 @@ export default function App() {
       setQuery("");
       setAppPage(0);
       setSelectedSearchIndex(0);
+      setPinsExpanded(false);
       requestAnimationFrame(() => searchRef.current?.focus());
     };
     requestAnimationFrame(() => searchRef.current?.focus());
@@ -456,7 +472,10 @@ export default function App() {
     let dispose: (() => void)[] = [];
     void import("@tauri-apps/api/event").then(async ({ listen }) => {
       dispose = [
-        await listen("launcher-shown", prepareLauncher),
+        await listen<string>("launcher-shown", (event) => {
+          prepareLauncher();
+          if (event.payload === "clipboard" || event.payload === "commands") setMode(event.payload);
+        }),
         await listen("navigate-settings", () => setPage("settings")),
         await listen("check-update", () => void checkForUpdates()),
       ];
@@ -478,7 +497,7 @@ export default function App() {
     );
   };
   const recommended = useMemo(
-    () => [...apps].sort((a, b) => smartScore(b) - smartScore(a)).slice(0, 7),
+    () => [...apps].sort((a, b) => smartScore(b) - smartScore(a)),
     [apps],
   );
   const categories = useMemo(
@@ -542,19 +561,22 @@ export default function App() {
     );
   }, [apps, query, mode, settings.sortBy, category, searchIndices]);
   const pinnedApps = useMemo(() => apps.filter((app) => app.favorite).sort((a, b) => (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0) || a.name.localeCompare(b.name)), [apps]);
-  const { topRow, showPins, pageCount, pageApps } = appPageLayout(visible, pinnedApps, recommended, settings.viewMode,
+  const { topRow, showPins, stackPins, shelfCount, pageCount, pageApps } = appPageLayout(visible, pinnedApps, recommended, settings.viewMode,
     settings.showRecommendations && category === "全部" && !query && mode === "apps", Boolean(query.trim()), appPage);
-  const showRecommended = topRow.length > 0;
+  const showRecommended = shelfCount > 0;
+  const hasSuggestions = topRow.some((app) => !app.favorite);
+  useEffect(() => setPinsExpanded(false), [query, category, mode, page, compactLayout, settings.viewMode, stackPins]);
+  useEffect(() => { if (pinsExpanded) setSelectedSearchIndex(0); }, [pinsExpanded]);
+  useEffect(() => setSelectedSearchIndex(0), [shelfCount]);
   useEffect(() => setAppPage(0), [query, settings.viewMode]);
-  useEffect(() => setSelectedSearchIndex(0), [query, category, appPage]);
+  useEffect(() => setSelectedSearchIndex(0), [query, category, appPage, settings.viewMode]);
   useEffect(() => {
-    if (query)
-      requestAnimationFrame(() =>
-        document
-          .querySelector<HTMLElement>('[aria-selected="true"]')
-          ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
-      );
-  }, [selectedSearchIndex, query]);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>('[aria-selected="true"]')
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
+    );
+  }, [selectedSearchIndex]);
   useEffect(() => {
     if (appPage >= pageCount) setAppPage(pageCount - 1);
   }, [pageCount, appPage]);
@@ -736,34 +758,56 @@ export default function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (page !== "home" || menu || categoryManager || pendingSystemAction || appImporterOpen || compactLayout) return;
+      if (page !== "home" || menu || categoryManager || pendingSystemAction || appImporterOpen || compactLayout || pinsExpanded) return;
       const ime =
         event.isComposing ||
         composingRef.current ||
         event.keyCode === 229 ||
         Date.now() - compositionEndedAt.current < 140;
       if (ime) return;
-      const resultCount = pageApps.length + actionCandidates.length;
-      if (mode !== "apps" || !query.trim() || !resultCount) return;
+      const resultCount =
+        pageApps.length + shelfCount + actionCandidates.length;
+      if (mode !== "apps" || !resultCount) return;
+      const target = event.target as HTMLElement;
+      if (target.closest("select, textarea")) return;
+      const button = target.closest("button");
+      if (
+        button &&
+        !button.classList.contains("app-card") &&
+        !button.classList.contains("pinned-stack-toggle") &&
+        !button.closest(".system-candidates")
+      )
+        return;
       const columns = settings.viewMode === "grid" ? 7 : 1;
       if (
         ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
       ) {
         event.preventDefault();
-        setSelectedSearchIndex((index) => {
-          const step = index < actionCandidates.length ? 1 : columns;
-          const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" ? -step : step;
-          const next = event.key === "ArrowUp" && index >= actionCandidates.length && index + delta < actionCandidates.length
-            ? actionCandidates.length - 1 : index + delta;
-          return Math.max(0, Math.min(resultCount - 1, next));
-        });
+        setSelectedSearchIndex((index) =>
+          nextLauncherSelection(
+            index,
+            event.key as LauncherArrowKey,
+            actionCandidates.length,
+            shelfCount,
+            pageApps.length,
+            columns,
+          ),
+        );
       } else if (event.key === "Enter") {
         event.preventDefault();
         if (selectedSearchIndex < actionCandidates.length) {
           void executeSystemAction(actionCandidates[selectedSearchIndex]);
         } else {
-          const appIndex = Math.min(selectedSearchIndex - actionCandidates.length, pageApps.length - 1);
-          if (pageApps[appIndex]) void open(pageApps[appIndex]);
+          const appIndex = selectedSearchIndex - actionCandidates.length;
+          if (stackPins && appIndex === 0) {
+            setPinsExpanded(true);
+            return;
+          }
+          const app =
+            appIndex < shelfCount
+              ? topRow[appIndex - Number(stackPins)]
+              : pageApps[appIndex - shelfCount];
+          if (app) void open(app);
         }
       }
     };
@@ -776,6 +820,11 @@ export default function App() {
     menu,
     categoryManager,
     pageApps,
+    topRow,
+    showRecommended,
+    shelfCount,
+    stackPins,
+    pinsExpanded,
     selectedSearchIndex,
     settings.viewMode,
     actionCandidates,
@@ -927,6 +976,9 @@ export default function App() {
                 <CommandCenter
                   mode={mode}
                   query={query}
+                  setQuery={(value) => { setQuery(value); requestAnimationFrame(() => searchRef.current?.focus()); }}
+                  platform={isWindows ? "windows" : navigator.userAgent.includes("Mac") ? "macos" : "linux"}
+                  imeActive={() => composingRef.current || Date.now() - compositionEndedAt.current < 140}
                   language={settings.language}
                   fileSearchDirs={settings.fileSearchDirs}
                   clipboardEntries={clipboardEntries}
@@ -942,8 +994,9 @@ export default function App() {
               ) : (
                 <>
                   <section
-                    className={`library launchpad ${showRecommended ? "has-recommend" : ""} ${showPins ? "has-pins" : ""}`}
+                    className={`library launchpad ${showRecommended ? "has-recommend" : ""} ${showPins ? "has-pins" : ""} ${query.trim() && actionCandidates.length && pageApps.length ? "has-mixed-results" : ""}`}
                     onWheel={(e) => {
+                      if (query.trim()) return;
                       wheelDelta.current +=
                         Math.abs(e.deltaX) > Math.abs(e.deltaY)
                           ? e.deltaX
@@ -969,7 +1022,7 @@ export default function App() {
                       <span className="library-caption">
                         {query
                           ? settings.language === "en" ? `${visible.length + actionCandidates.length} results` : `${visible.length + actionCandidates.length} 个结果`
-                          : showPins ? settings.language === "en" ? "Pinned apps" : "收藏置顶" : showRecommended
+                          : showPins ? settings.language === "en" ? hasSuggestions ? "Pinned & for you" : "Pinned apps" : hasSuggestions ? "收藏与推荐" : "收藏置顶" : showRecommended
                             ? settings.language === "en" ? "For you" : "为你推荐"
                             : category !== "全部" ? category : settings.language === "en" ? "Your apps" : "我的应用"}
                         {!query && <small>{settings.language === "en" ? `${visible.length} apps` : `${visible.length} 个应用`}</small>}
@@ -1050,25 +1103,38 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                    {visible.length || topRow.length ? (
+                    {visible.length || shelfCount ? (
                       <>
                         {showRecommended && (
-                          <div className={`recommend-grid ${showPins ? "pinned-grid" : ""}`} aria-label={showPins ? settings.language === "en" ? "Pinned apps on every page" : "每页固定显示的收藏应用" : undefined} onWheel={(event) => {
-                            if (!showPins) return;
-                            event.stopPropagation();
-                            event.currentTarget.scrollLeft += Math.abs(event.deltaY) > Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
-                          }}>
-                            {topRow.map((a) => (
+                          <div className="launcher-shelf" onWheel={(event) => event.stopPropagation()}>
+                          <div className="recommend-grid" aria-label={settings.language === "en" ? "Pinned apps and recommendations" : "收藏与智能推荐"}>
+                            {stackPins && (
+                              <PinnedStack
+                                apps={pinnedApps}
+                                language={settings.language}
+                                expanded={pinsExpanded}
+                                selected={selectedSearchIndex === actionCandidates.length}
+                                onExpandedChange={setPinsExpanded}
+                                onOpen={(app) => { setPinsExpanded(false); void open(app); }}
+                                onMenu={(id, x, y) => setMenu({ id, x, y })}
+                              />
+                            )}
+                            {topRow.map((a, index) => (
                               <AppCard
                                 key={a.id}
                                 app={a}
                                 language={settings.language}
                                 compact
+                                selected={
+                                  index + actionCandidates.length + Number(stackPins) ===
+                                  selectedSearchIndex
+                                }
                                 onOpen={open}
                                 onMenu={(id, x, y) => setMenu({ id, x, y })}
                                 onGroup={groupApps}
                               />
                             ))}
+                          </div>
                           </div>
                         )}
                         <div
@@ -1082,8 +1148,9 @@ export default function App() {
                               order={index}
                               language={settings.language}
                               selected={
-                                Boolean(query.trim()) &&
-                                index + actionCandidates.length === selectedSearchIndex
+                                index + actionCandidates.length +
+                                  shelfCount ===
+                                selectedSearchIndex
                               }
                               onOpen={open}
                               onMenu={(id, x, y) => setMenu({ id, x, y })}
@@ -2090,9 +2157,20 @@ function SettingsPage({
           </div>
           <HotkeyRecorder
             value={settings.hotkey}
+            settings={settings}
+            field="hotkey"
             onChange={(hotkey) => update({ hotkey })}
           />
         </div>
+        {(["clipboardHotkey", "commandsHotkey"] as const).map((field) => (
+          <div className="setting-row" key={field}>
+            <div>
+              <strong>{field === "clipboardHotkey" ? (en ? "Open clipboard" : "直接打开剪贴板") : (en ? "Open commands" : "直接打开命令中心")}</strong>
+              <span>{en ? "Works from any app; choose Disabled to release it" : "在其他软件中也可唤起；可选停用以释放快捷键"}</span>
+            </div>
+            <HotkeyRecorder value={settings[field]} settings={settings} field={field} onChange={(value) => update({ [field]: value })} />
+          </div>
+        ))}
       </SettingSection>
       <SettingSection
         icon={<CommandIcon />}
@@ -2354,42 +2432,65 @@ function Segment({
 }
 function HotkeyRecorder({
   value,
+  settings,
+  field,
   onChange,
 }: {
   value: string;
+  settings: Settings;
+  field: "hotkey" | "clipboardHotkey" | "commandsHotkey";
   onChange: (value: string) => void;
 }) {
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState("");
   const lastControl = useRef(0);
+  const recordingRef = useRef(false);
+  const recorderMounted = useRef(true);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => {
+    recorderMounted.current = true;
+    return () => {
+      recorderMounted.current = false;
+      if (recordingRef.current) void setGlobalHotkeys(settingsRef.current).catch(() => {});
+    };
+  }, []);
   async function apply(next: string) {
+    recordingRef.current = false;
     setRecording(false);
     setError("");
     try {
-      await setGlobalHotkey(next, value);
+      await setGlobalHotkeys({ ...settings, [field]: next });
       onChange(next);
     } catch (reason) {
       setError(String(reason));
+      await setGlobalHotkeys(settings).catch(() => {});
     }
   }
   async function begin() {
+    if (recordingRef.current || document.querySelector(".hotkey-recorder.recording")) return;
     setError("");
     lastControl.current = 0;
+    recordingRef.current = true;
     try {
       await suspendGlobalHotkeys();
+      if (!recorderMounted.current) { await setGlobalHotkeys(settingsRef.current); return; }
       setRecording(true);
     } catch (reason) {
+      recordingRef.current = false;
       setError(String(reason));
     }
   }
   async function stop() {
+    recordingRef.current = false;
     setRecording(false);
-    await setGlobalHotkey(value).catch(() => {});
+    await setGlobalHotkeys(settings).catch(() => {});
   }
   function capture(e: KeyboardEvent) {
     if (!recording) return;
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (e.repeat) return;
     if (e.key === "Escape") {
       stop();
       return;
@@ -2420,13 +2521,15 @@ function HotkeyRecorder({
   useEffect(() => {
     if (!recording) return;
     const handler = (e: KeyboardEvent) => capture(e);
+    const cancel = () => { void stop(); };
     window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [recording, value]);
+    window.addEventListener("blur", cancel);
+    return () => { window.removeEventListener("keydown", handler, true); window.removeEventListener("blur", cancel); };
+  }, [recording]);
   const display =
     value === "DoubleControl"
       ? "双击 Ctrl"
-      : value.replace("CommandOrControl", "⌘ / Ctrl").split("+").join("  +  ");
+      : value ? value.replace("CommandOrControl", "⌘ / Ctrl").split("+").join("  +  ") : "已停用";
   return (
     <div className="hotkey-stack">
       <div className="hotkey-control">
@@ -2441,6 +2544,8 @@ function HotkeyRecorder({
           value={value}
           onChange={(e) => apply(e.target.value)}
         >
+          {field !== "hotkey" && <option value="">停用</option>}
+          {!["", "Alt+Space", "CommandOrControl+Alt+Space", "CommandOrControl+Space", "CommandOrControl+Shift+Space", "Alt+Shift+Space", "DoubleControl"].includes(value) && <option value={value}>{display}</option>}
           <option value="Alt+Space">⌥ Space</option>
           <option value="CommandOrControl+Alt+Space">Ctrl/⌘ ⌥ Space</option>
           <option value="CommandOrControl+Space">⌘ Space</option>
@@ -3060,8 +3165,8 @@ function AboutDialog({
         <button className="about-close" onClick={onClose}>
           <X />
         </button>
-        <img src={appIconUrl} alt="启喵" />
-        <h2>{en ? "qimiao" : "启喵"}</h2>
+        <img src={appIconUrl} alt="启喵 Qimiao" />
+        <h2>{en ? "Qimiao" : "启喵 · Qimiao"}</h2>
         <strong>v{APP_VERSION}</strong>
         <p>
           {en

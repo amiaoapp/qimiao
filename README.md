@@ -1,4 +1,4 @@
-# 启喵 / qimiao
+# 启喵 / Qimiao
 
 **智能跨平台启动器**
 
@@ -8,7 +8,11 @@
 
 启喵使用 Tauri 2、Rust、React 和 TypeScript 构建，支持 macOS、Windows 与 Linux。它保留 Launchpad 式应用首页，同时把命令、文件、剪贴板、计算、Emoji、快捷指令与 AI 查询统一到同一个搜索框中。
 
-qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a Launchpad-style app home while bringing commands, files, clipboard history, calculations, emoji, shortcuts, and AI into one search box.
+Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a Launchpad-style app home while bringing commands, files, clipboard history, calculations, emoji, shortcuts, and AI into one search box.
+
+正式英文名为 **Qimiao**，中文名保留“启喵”。1.0 起安装包统一使用 `Qimiao_` / `qimiao_` 英文名称前缀，避免下载时中文名称被剥离；图标采用猫头与字母 Q。应用标识保持不变，沿用本机已有设置与剪贴板数据。
+
+[下载最新版本 / Download](https://github.com/amiaoapp/qimiao/releases/latest)
 
 ## 截图 / Screenshot
 
@@ -19,11 +23,11 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 ## 功能 / Features
 
 - 可选择自动扫描系统应用，也可完全关闭扫描并逐个添加应用；扫描确认可选，刷新会清理已卸载应用
-- 收藏应用在每页固定置顶，不随排序和翻页变化；支持分类横向浏览、中文系统应用别名、全拼与首字母搜索，以及配置备份导入导出
+- 收藏与智能推荐共用顶部一排；收藏超过三个时收进第一个堆叠图标，后续位置保留推荐；支持分类横向浏览、中文别名、全拼与首字母搜索及配置备份
 - 一键按已有分类整理未分类应用，保留手动分类；列表模式自动收窄窗口
 - Launchpad 式分页、纵向列表、键盘二维导航与智能推荐行
 - macOS 26+ 原生 `NSGlassEffectView` 液态玻璃，旧系统与其他平台提供视觉回退
-- 自定义全局快捷键、菜单栏常驻、失焦或 Esc 隐藏、开机启动
+- 启动器、剪贴板、命令中心各有独立全局快捷键，菜单栏常驻、失焦或 Esc 隐藏、开机启动
 - OpenAI Compatible AI 查询与翻译
 - 命令中心：Tab 模式切换、剪贴板历史、文件搜索、内联计算与单位换算、Emoji、Apple 快捷指令
 - 原生系统操作与窗口布局命令；剪贴板默认只在本机记录，可选择开启自有 WebDAV 同步
@@ -36,6 +40,8 @@ qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 - 本机字体搜索、实时预览与切换；界面动效可关闭，并尊重系统减少动态效果偏好
 - 顶部留白可拖动窗口，重新唤起时恢复居中稍偏下的位置
 - 简洁模式仅保留搜索、最近记录与常用命令；Windows 统一入口手动批量添加应用
+- 完整/简洁模式以窗口中心展开收起；剪贴板横向分类、双栏预览、右键菜单与固定粘贴栏
+- JSON 格式化、UTF-8 Base64 编解码、时间戳转换；单位换算支持时间、温度和中文常见单位
 
 ---
 

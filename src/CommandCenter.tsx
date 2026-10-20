@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Command behavior includes compatibility work adapted from TinyCast, Copyright (C) 2026 Abue Ammar.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Calculator, Clipboard, Copy, FileSearch, Keyboard, Lock, Maximize2,
   PanelLeft, PanelRight, Smile, Workflow, Link, NotebookPen, TextQuote, TerminalSquare,
 } from "lucide-react";
 import type { CommandTool, LauncherMode, Settings } from "./types";
-import { calculateExpression, convertUnits, emojiCatalog, matchText, type CommandResult } from "./command-center";
+import { calculateExpression, convertUnits, dictionaryTerm, splitCommandArguments, textUtility, emojiCatalog, matchText, type CommandResult } from "./command-center";
 import { expandCompatibleTemplate, normalizeCompatibleDestination, toolArgumentInput, toolMatchesQuery } from "./tinycast-compat";
-import { availableSystemActions, type SystemAction } from "./system-actions";
+import { availableSystemActions, type SystemAction, type DesktopPlatform } from "./system-actions";
 import {
   listAppleShortcuts, openPath, runAppleShortcut,
   runWindowAction, searchFiles, setClipboardText, openExternalUrl, runCustomCommand,
@@ -17,6 +17,9 @@ import {
 type Props = {
   mode: "commands" | "clipboard";
   query: string;
+  setQuery: (query: string) => void;
+  platform: DesktopPlatform;
+  imeActive: () => boolean;
   language: Settings["language"];
   fileSearchDirs: string[];
   clipboardEntries: string[];
@@ -51,27 +54,36 @@ export default function CommandCenter(props: Props) {
   const [selected, setSelected] = useState(0);
   const [files, setFiles] = useState<CommandResult[]>([]);
   const [shortcuts, setShortcuts] = useState<string[]>([]);
+  const [fileStatus, setFileStatus] = useState("");
+  const [output, setOutput] = useState<{ title: string; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const selectedRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (!navigator.userAgent.includes("Mac")) return;
+    if (props.platform !== "macos") return;
     void listAppleShortcuts().then(setShortcuts).catch(() => setShortcuts([]));
-  }, []);
+  }, [props.platform]);
   useEffect(() => {
-    const raw = query.replace(/^(file:|f:|文件[:：]?)/i, "").trim();
+    const raw = query.trim().replace(/^(file:|f:|文件[:：]?)/i, "").trim();
     const wantsFiles = /^(file:|f:|文件[:：]?)/i.test(query.trim());
+    let cancelled = false;
+    setFiles([]);
     if (!wantsFiles || raw.length < 2) {
       setFiles([]);
+      setFileStatus(wantsFiles ? (en ? "Enter at least 2 characters" : "请输入至少两个字符的文件名") : "");
       return;
     }
+    setFileStatus(en ? "Searching local files…" : "正在搜索本机文件…");
     const timer = window.setTimeout(() => {
       void searchFiles(raw, fileSearchDirs, 40)
-        .then((items) => setFiles(items.map((item) => ({
+        .then((items) => { if (cancelled) return; setFileStatus(items.length ? "" : (en ? "No files found in the configured folders" : "搜索目录中没有找到匹配文件，可在设置中调整目录")); setFiles(items.map((item) => ({
           id: `file:${item.path}`, title: item.name, subtitle: item.path,
           kind: "file", path: item.path,
-        }))))
-        .catch(() => setFiles([]));
+        }))); })
+        .catch((error) => { if (!cancelled) setFileStatus(String(error)); });
     }, 220);
-    return () => window.clearTimeout(timer);
-  }, [query, fileSearchDirs]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [query, fileSearchDirs, en]);
 
   const results = useMemo<CommandResult[]>(() => {
     if (mode === "clipboard") {
@@ -86,7 +98,8 @@ export default function CommandCenter(props: Props) {
     const trimmed = query.trim();
     const calculator = calculateExpression(trimmed);
     const conversion = convertUnits(trimmed);
-    const systemActions: CommandResult[] = availableSystemActions(navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "macos" : "linux").map((action) => ({
+    const utility = textUtility(trimmed, en);
+    const systemActions: CommandResult[] = availableSystemActions(props.platform).map((action) => ({
       id: `system:${action.id}`, title: en ? action.en : action.zh,
       subtitle: en ? "System Action" : "系统操作", kind: "command" as const,
       action: `system:${action.id}`, searchTerms: `${action.zh} ${action.en} ${action.aliases}`,
@@ -108,6 +121,11 @@ export default function CommandCenter(props: Props) {
       { id: "files", title: en ? "Search Files" : "搜索文件", subtitle: en ? "Type file: followed by a name" : "输入 file: 后跟文件名", kind: "command", action: "files" },
       { id: "dictionary", title: en ? "Define a Word" : "查询词典", subtitle: en ? "Type dict: followed by a word" : "输入 dict: 后跟单词", kind: "command", action: "dictionary-help" },
       { id: "calendar", title: en ? "Open Calendar" : "打开日历", subtitle: en ? "Open the system calendar" : "打开系统日历", kind: "command", action: "open-calendar" },
+      { id: "json-help", title: en ? "Format JSON" : "格式化 JSON", subtitle: 'json: {"hello":"world"}', kind: "command", action: "help-json" },
+      { id: "base64-help", title: en ? "Encode Base64" : "Base64 编码", subtitle: en ? "base64: text (UTF-8)" : "base64: 文本，支持中文 UTF-8", kind: "command", action: "help-base64" },
+      { id: "decode64-help", title: en ? "Decode Base64" : "Base64 解码", subtitle: "decode64: SGVsbG8=", kind: "command", action: "help-decode64" },
+      { id: "time-help", title: en ? "Convert Timestamp" : "时间戳转换", subtitle: en ? "time: now / Unix seconds / milliseconds / ISO date" : "time: now / 秒时间戳 / 毫秒时间戳 / ISO 日期", kind: "command", action: "help-time" },
+      { id: "units-help", title: en ? "Convert Units" : "单位换算", subtitle: en ? "Length, mass, data, time & temperature: 100 c to f" : "长度、重量、数据、时间、温度，如 100 c to f", kind: "command", action: "help-units" },
       { id: "add-link-help", title: en ? "Add Quicklink" : "添加快速链接", subtitle: "link: title | https://example.com", kind: "command", action: "help-link" },
       { id: "add-snippet-help", title: en ? "Add Snippet" : "添加代码片段", subtitle: en ? "snippet: title | content" : "snippet: 名称 | 内容", kind: "command", action: "help-snippet" },
       { id: "add-note-help", title: en ? "Add Note" : "添加笔记", subtitle: en ? "note: title | body" : "note: 标题 | 正文", kind: "command", action: "help-note" },
@@ -117,13 +135,14 @@ export default function CommandCenter(props: Props) {
       const match = trimmed.match(/^(link|snippet|note|cmd)[:：]\s*(.+)$/i);
       if (!match) return null;
       const values = match[2].split("|").map((value) => value.trim());
+      if (!values[0] || !values[1]) return null;
       const type = match[1].toLowerCase();
       if (type === "link" && values.length >= 2 && /^https?:\/\//i.test(values[1]))
         return { type: "quicklink", title: values[0], content: values[1] } as const;
       if ((type === "snippet" || type === "note") && values.length >= 2)
         return { type, title: values[0], content: values.slice(1).join(" | ") } as const;
       if (type === "cmd" && values.length >= 2)
-        return { type: "custom", title: values[0], content: values[1], args: values.slice(2).join(" ").split(/\s+/).filter(Boolean) } as const;
+        { const args = splitCommandArguments(values.slice(2).join(" | ")); return args ? { type: "custom", title: values[0], content: values[1], args, requiresConfirmation: true, showsOutput: true } as const : null; }
       return null;
     })();
     const toolResults: CommandResult[] = tools
@@ -148,18 +167,19 @@ export default function CommandCenter(props: Props) {
       .filter((name) => (wantsShortcuts || !trimmed) && matchText(name, shortcutQuery))
       .slice(0, 15)
       .map((name) => ({ id: `shortcut:${name}`, title: name, subtitle: en ? "Apple Shortcut" : "Apple 快捷指令", kind: "shortcut" as const, value: name }));
-    const dictionaryMatch = trimmed.match(/^(?:dict|define|词典|释义)[:：]?\s+(.+)$/i);
+    const term = dictionaryTerm(trimmed);
     return [
+      ...(utility ? [utility] : []),
       ...(calculator === null ? [] : [{ id: "calculation", title: String(calculator), subtitle: trimmed, kind: "calculator" as const, value: String(calculator) }]),
       ...(conversion === null ? [] : [{
         id: "conversion", title: `${Number(conversion.value.toPrecision(12))} ${conversion.to}`,
         subtitle: trimmed, kind: "calculator" as const,
         value: `${Number(conversion.value.toPrecision(12))} ${conversion.to}`,
       }]),
-      ...(dictionaryMatch ? [{
-        id: "dictionary-result", title: en ? `Define “${dictionaryMatch[1]}”` : `查询“${dictionaryMatch[1]}”`,
+      ...(term ? [{
+        id: "dictionary-result", title: en ? `Define “${term}”` : `查询“${term}”`,
         subtitle: en ? "Open dictionary definition" : "打开词典释义", kind: "command" as const,
-        action: "dictionary", value: dictionaryMatch[1].trim(),
+        action: "dictionary", value: term,
       }] : []),
       ...(createTool === null ? [] : [{
         id: "create-tool", title: en ? `Save “${createTool.title}”` : `保存“${createTool.title}”`,
@@ -172,15 +192,18 @@ export default function CommandCenter(props: Props) {
       ...shortcutResults,
       ...emoji,
     ];
-  }, [mode, clipboardEntries, query, files, shortcuts, tools, en]);
+  }, [mode, clipboardEntries, query, files, shortcuts, tools, en, props.platform]);
   useEffect(() => setSelected(0), [query, mode]);
+  useEffect(() => setSelected((index) => Math.min(index, Math.max(0, results.length - 1))), [results.length]);
+  useEffect(() => { selectedRef.current?.scrollIntoView({ block: "nearest" }); }, [selected, results]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (props.blocked || event.defaultPrevented || event.isComposing || event.keyCode === 229 || !results.length) return;
+      if (props.blocked || busyRef.current || output || event.defaultPrevented || event.isComposing || event.keyCode === 229 || props.imeActive() || !results.length) return;
+      if ((event.target as Element)?.closest("textarea, select, [data-local-dialog], [contenteditable=true]")) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         setSelected((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + results.length) % results.length);
-      } else if (event.key === "Enter") {
+      } else if (event.key === "Enter" && !event.repeat) {
         event.preventDefault();
         void activate(results[selected] ?? results[0]);
       }
@@ -189,23 +212,32 @@ export default function CommandCenter(props: Props) {
     return () => window.removeEventListener("keydown", handler, true);
   });
   async function activate(result: CommandResult) {
+    if (busyRef.current || props.blocked) return;
+    busyRef.current = true; setBusy(true);
     try {
+      if (result.action === "input-error") return showToast(result.subtitle);
+      if (result.action === "preview-output") return setOutput({ title: result.title, text: result.value ?? "" });
       if (result.action === "clipboard") return setMode("clipboard");
-      if (result.action === "files") return showToast(en ? "Type file: followed by a filename" : "请输入 file:文件名");
-      if (result.action === "dictionary-help") return showToast(en ? "Type dict: followed by a word" : "请输入 dict:单词");
+      if (result.action === "files") return props.setQuery("file: ");
+      if (result.action === "dictionary-help") return props.setQuery("dict: ");
       if (result.action === "open-calendar") {
-        await openExternalUrl(navigator.userAgent.includes("Mac") ? "x-apple-calevent://" : "https://calendar.google.com/");
+        await openExternalUrl(props.platform === "macos" ? "x-apple-calevent://" : "https://calendar.google.com/");
         return;
       }
-      if (result.action?.startsWith("help-")) return showToast(result.subtitle);
+      if (result.action?.startsWith("help-")) {
+        const prefix = ({ "help-link": "link", "help-snippet": "snippet", "help-note": "note", "help-command": "cmd", "help-json": "json", "help-base64": "base64", "help-decode64": "decode64", "help-time": "time" } as Record<string, string>)[result.action];
+        props.setQuery(result.action === "help-units" ? "100 c to f" : result.action === "help-time" ? "time: now" : `${prefix}: `);
+        return showToast(result.subtitle);
+      }
       if (result.action === "create-tool" && result.value) {
         const tool = JSON.parse(result.value) as Omit<CommandTool, "id">;
         setTools([...tools, { ...tool, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }]);
+        props.setQuery("");
         return showToast(en ? "Saved to Command Center" : "已保存到命令中心");
       }
       if (result.action?.startsWith("system:")) {
         const action = result.action.slice(7);
-        const available = availableSystemActions(navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "macos" : "linux");
+        const available = availableSystemActions(props.platform);
         const item = available.find((candidate) => candidate.id === action);
         if (item) props.onSystemAction(item);
         return;
@@ -258,15 +290,16 @@ export default function CommandCenter(props: Props) {
             : `请在“${tool?.keyword ?? tool?.alias ?? tool?.title}”后输入参数`);
         }
         const configuredArgs = tool?.args ?? JSON.parse(result.value ?? "[]") as string[];
-        const expandedArgs = await Promise.all(configuredArgs.map(async (arg) =>
-          (await expandCompatibleTemplate(arg, expansionContext)).value));
+        const argResults = await Promise.all(configuredArgs.map((arg) => expandCompatibleTemplate(arg, expansionContext)));
+        const directoryResult = tool?.workingDirectory ? await expandCompatibleTemplate(tool.workingDirectory, expansionContext) : null;
+        if (argResults.some((result) => result.missingArguments.length) || directoryResult?.missingArguments.length)
+          return showToast(en ? "Missing command arguments" : "请在命令名称后补齐参数");
+        const expandedArgs = argResults.map((result) => result.value);
         const commandContainsArgument = /\{\s*(?:argument|query)\b/i.test(result.path);
         const args = supplied && !commandContainsArgument && !expandedArgs.length
           ? [supplied]
           : expandedArgs;
-        const workingDirectory = tool?.workingDirectory
-          ? (await expandCompatibleTemplate(tool.workingDirectory, expansionContext)).value
-          : undefined;
+        const workingDirectory = directoryResult?.value;
         if ((tool?.requiresConfirmation || tool?.showsConfirmation)
           && !window.confirm(en ? `Run “${tool.title}”?` : `运行“${tool.title}”？`)) return;
         const output = await runCustomCommand(
@@ -276,14 +309,15 @@ export default function CommandCenter(props: Props) {
           tool?.showsOutput === true,
         );
         if (output.trim()) {
-          await setClipboardText(output.trim());
-          return showToast(en ? "Output copied to clipboard" : "命令输出已复制到剪贴板");
+          setOutput({ title: result.title, text: output });
+          return;
         }
+        return showToast(tool?.showsOutput ? (en ? "Completed (no output)" : "已执行完成（无输出）") : (en ? "Command started in background" : "命令已在后台启动，未等待结束"));
       }
       else if (result.kind === "file" && result.path) await openPath(result.path);
       else if (result.kind === "shortcut" && result.value) await runAppleShortcut(result.value);
       else if (result.action === "dictionary" && result.value) await openExternalUrl(
-        navigator.userAgent.includes("Mac")
+        props.platform === "macos"
           ? `dict://${encodeURIComponent(result.value)}`
           : `https://www.google.com/search?q=${encodeURIComponent(`define ${result.value}`)}`,
       );
@@ -291,6 +325,8 @@ export default function CommandCenter(props: Props) {
       showToast(en ? "Done" : "已完成");
     } catch (error) {
       showToast(`${en ? "Failed" : "操作失败"}：${String(error)}`);
+    } finally {
+      busyRef.current = false; setBusy(false);
     }
   }
   return (
@@ -302,9 +338,11 @@ export default function CommandCenter(props: Props) {
         </div>
         <kbd>{results.length}</kbd>
       </header>
+      {fileStatus && <p className="command-status" role="status">{fileStatus}</p>}
+      {busy && <p className="command-status" role="status">{en ? "Running…" : "正在执行…"}</p>}
       <div className="command-results">
         {results.length ? results.map((result, index) => (
-          <button key={result.id} className={index === selected ? "selected" : ""} onMouseEnter={() => setSelected(index)} onClick={() => void activate(result)} onContextMenu={(event) => {
+          <button key={result.id} ref={index === selected ? selectedRef : undefined} disabled={busy || props.blocked} className={index === selected ? "selected" : ""} onMouseEnter={() => setSelected(index)} onClick={() => void activate(result)} onContextMenu={(event) => {
             if (!result.id.startsWith("tool:")) return;
             event.preventDefault();
             if (window.confirm(en ? `Remove “${result.title}”?` : `删除“${result.title}”？`))
@@ -316,6 +354,13 @@ export default function CommandCenter(props: Props) {
           </button>
         )) : <div className="command-empty">{en ? "No matching results" : "没有匹配结果"}</div>}
       </div>
+      {output && <div className="modal-shade" data-local-dialog onClick={() => setOutput(null)}>
+        <section className="clip-dialog command-output" role="dialog" aria-modal="true" aria-label={output.title} onClick={(event) => event.stopPropagation()}>
+          <button className="clip-close" aria-label={en ? "Close" : "关闭"} onClick={() => setOutput(null)}>×</button>
+          <h3>{output.title}</h3><pre>{output.text}</pre>
+          <button className="secondary" onClick={() => void setClipboardText(output.text).then(() => showToast(en ? "Copied" : "已复制")).catch((error) => showToast(String(error)))}><Copy size={16}/>{en ? "Copy output" : "复制输出"}</button>
+        </section>
+      </div>}
     </section>
   );
 }
