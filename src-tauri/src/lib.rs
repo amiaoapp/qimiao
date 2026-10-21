@@ -23,6 +23,9 @@ use walkdir::WalkDir;
 mod clipboard;
 mod fonts;
 mod webdav;
+mod tool_windows;
+#[cfg(target_os = "macos")]
+mod macos_tools;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -96,6 +99,7 @@ struct ExtensionBundleTicket {
 struct ShortcutRuntime {
     bindings: Mutex<Vec<(Shortcut, String, bool)>>,
     last_control: Mutex<Option<Instant>>,
+    pressed: Mutex<HashSet<u32>>,
 }
 
 struct WindowRuntime {
@@ -131,6 +135,7 @@ impl Default for ShortcutRuntime {
         Self {
             bindings: Mutex::new(Vec::new()),
             last_control: Mutex::new(None),
+            pressed: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -2830,6 +2835,7 @@ fn set_global_shortcuts(
         }
     }
     *current = parsed;
+    if let Ok(mut pressed) = state.pressed.lock() { pressed.clear(); }
     if let Ok(mut last) = state.last_control.lock() { *last = None; }
     Ok(())
 }
@@ -2867,21 +2873,33 @@ fn start_launcher_drag(window: tauri::WebviewWindow) -> Result<(), String> {
 fn show_launcher(app: &tauri::AppHandle) { show_launcher_mode(app, "apps"); }
 
 pub(crate) fn show_launcher_mode(app: &tauri::AppHandle, mode: &str) {
+    if mode == "clipboard" {
+        tool_windows::show_clipboard(app, false);
+        return;
+    }
+    let handle = app.clone();
+    let mode = mode.to_string();
+    let _ = app.run_on_main_thread(move || {
+    let app = &handle;
     if let Some(w) = app.get_webview_window("main") {
+        tool_windows::remember_target(app);
+        if let Some(clipboard) = app.get_webview_window("clipboard") { let _ = clipboard.hide(); }
         app.state::<WindowRuntime>()
-            .protect_focus(Duration::from_millis(1200));
+            .protect_focus(Duration::from_millis(300));
         #[cfg(target_os = "windows")]
         let _ = apply_windows_rounded_region(&w);
         position_launcher(&w);
+        tool_windows::raise(&w);
         let _ = w.show();
         let _ = w.set_focus();
-        let _ = app.emit("launcher-shown", mode);
+        let _ = app.emit_to("main", "launcher-shown", mode);
     }
+    });
 }
 
 fn toggle_launcher(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        if w.is_visible().unwrap_or(false) {
+        if w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) {
             let _ = w.hide();
         } else {
             show_launcher(app)
@@ -2994,6 +3012,7 @@ pub fn run() {
         .manage(WindowRuntime::default())
         .manage(clipboard::ClipboardRuntime::default())
         .manage(webdav::DavRuntime::default())
+        .manage(tool_windows::ToolWindows::default())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("启喵")
@@ -3003,8 +3022,15 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
+                    let runtime = app.state::<ShortcutRuntime>();
+                    if let Ok(mut pressed) = runtime.pressed.lock() {
+                        if event.state() == ShortcutState::Released {
+                            pressed.remove(&shortcut.id());
+                            return;
+                        }
+                        if !pressed.insert(shortcut.id()) { return; }
+                    }
                     if event.state() == ShortcutState::Pressed {
-                        let runtime = app.state::<ShortcutRuntime>();
                         let binding = runtime.bindings.lock().ok().and_then(|bindings|
                             bindings.iter().find(|(key, _, _)| key.id() == shortcut.id()).cloned());
                         let Some((_, target, double_control)) = binding else { return; };
@@ -3021,7 +3047,11 @@ pub fn run() {
                             }
                             *last = None;
                         }
-                        if target == "apps" { toggle_launcher(app) } else { show_launcher_mode(app, &target) }
+                        match target.as_str() {
+                            "apps" => toggle_launcher(app),
+                            "clipboard" => tool_windows::show_clipboard(app, true),
+                            _ => show_launcher_mode(app, &target),
+                        }
                     }
                 })
                 .build(),
@@ -3057,6 +3087,8 @@ pub fn run() {
             #[cfg(not(target_os = "windows"))]
             let _ = tray_ready;
             if let Some(w) = app.get_webview_window("main") {
+                tool_windows::remember_target(app.handle());
+                tool_windows::raise(&w);
                 #[cfg(target_os = "windows")]
                 {
                     let _ = w.set_shadow(false);
@@ -3093,6 +3125,12 @@ pub fn run() {
                     }
                 }
             }
+            if let Some(w) = app.get_webview_window("clipboard") {
+                tool_windows::raise(&w);
+                let _ = w.set_min_size(Some(tauri::LogicalSize::new(340.0, 320.0)));
+                #[cfg(target_os = "macos")]
+                apply_native_glass(&w)?;
+            }
             #[cfg(target_os = "windows")]
             log_windows_startup("setup completed");
             Ok(())
@@ -3111,6 +3149,12 @@ pub fn run() {
             _ => {}
         })
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
             if matches!(event, tauri::WindowEvent::Moved(_)) {
                 window
                     .app_handle()
@@ -3132,6 +3176,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            tool_windows::open_clipboard_window,
+            tool_windows::configure_clipboard_window,
+            tool_windows::clipboard_paste_status,
+            tool_windows::start_tool_resize,
             fonts::list_local_fonts,
             clipboard::clipboard_snapshot,
             clipboard::load_clipboard_history,

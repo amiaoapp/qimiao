@@ -47,7 +47,7 @@ import {
   type Clip,
   type ClipKind,
 } from "./clipboard-core";
-import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText, openMacosPermission } from "./tauri";
+import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText, openMacosPermission, clipboardPasteStatus } from "./tauri";
 import { clipboardCategory, clipRelativeTime, clipLink } from "./clipboard-view";
 import type { Settings } from "./types";
 import "./clipboard.css";
@@ -102,6 +102,15 @@ export default function ClipboardPane({
   const [clear, setClear] = useState(false),
     [working, setWorking] = useState(false);
   const [pastePermissionHelp, setPastePermissionHelp] = useState(false);
+  const [pasteStatus, setPasteStatus] = useState<{ trusted: boolean; executable: string } | null>(null);
+  const [pasteStatusError, setPasteStatusError] = useState("");
+  async function checkPastePermission() {
+    setPasteStatus(null);
+    setPasteStatusError("");
+    try { setPasteStatus(await clipboardPasteStatus()); }
+    catch (error) { setPasteStatusError(String(error)); }
+  }
+  useEffect(() => { if (pastePermissionHelp) void checkPastePermission(); }, [pastePermissionHelp]);
   const [permissionRetry, setPermissionRetry] = useState<{ clip: Clip; plain: boolean; enter: boolean } | null>(null);
   const [queue, setQueue] = useState<string[]>(() => {
     try {
@@ -1121,12 +1130,16 @@ export default function ClipboardPane({
             <p>{permissionRetry ? (en ? "Content is already copied. macOS blocked the simulated paste keystroke; you can paste manually with ⌘V." : "内容已经复制。macOS 阻止了模拟粘贴按键，你仍可切换到目标应用，手动按 ⌘V。") : (en ? "Automatic paste needs permission to send ⌘V to the target app." : "自动粘贴需要获得系统许可，才能向目标应用发送 ⌘V。")}</p>
             <ol className="paste-permission-steps">
               <li>{en ? "System Settings → Privacy & Security → Accessibility: enable Qimiao (启喵). If missing, click + and select Qimiao.app in Applications." : "系统设置 → 隐私与安全性 → 辅助功能：开启 Qimiao（启喵）。找不到时，点击“+”，在“应用程序”中选择 Qimiao.app。"}</li>
-              <li>{en ? "Privacy & Security → Automation: expand Qimiao and enable System Events. If it is not listed yet, retry pasting and choose Allow when macOS asks to control System Events." : "隐私与安全性 → 自动化：展开 Qimiao，开启 System Events（系统事件）。如果尚未列出，重试粘贴，并在系统询问是否允许控制 System Events 时选择“允许”。"}</li>
-              <li>{en ? "After enabling permissions, retry. If macOS still blocks it, quit and reopen Qimiao." : "授权后重试；如果仍被阻止，请退出并重新打开启喵。"}</li>
+              <li>{en ? "If it is already enabled but the check below says access is blocked, remove the old entry and add the currently running app again. macOS can retain an old authorization after an app update or move." : "如果开关已开，但下方检测仍显示未授权，请删除旧条目，再添加当前正在运行的应用。更新或移动应用后，macOS 可能保留旧的授权记录。"}</li>
+              <li>{en ? "Focus the destination input, reopen Clipboard with its hotkey, release the modifier keys, and choose an entry. Automatic paste now uses native keyboard events; System Events automation and Input Monitoring are not required." : "点击目标输入框，再用快捷键打开剪贴板，松开修饰键后选择记录。现在使用原生按键粘贴，无需开启 System Events 自动化或输入监控。"}</li>
             </ol>
+            <div className="paste-status" role="status">
+              {pasteStatus ? (pasteStatus.trusted ? (en ? "Current process: paste permission granted" : "当前运行进程：已获得粘贴权限") : (en ? "Current process: paste permission not granted" : "当前运行进程：未获得粘贴权限")) : pasteStatusError || (en ? "Checking current process permission…" : "正在检测当前进程权限…")}
+              {pasteStatus?.executable && <code>{pasteStatus.executable}</code>}
+            </div>
             <div className="clip-actions paste-permission-actions">
               <button className="secondary" onClick={() => setPastePermissionHelp(false)}>{en ? "Close" : "关闭"}</button>
-              <button className="secondary" onClick={() => void openMacosPermission("automation").catch((error) => showToast(String(error)))}>{en ? "Automation" : "打开自动化设置"}</button>
+              <button className="secondary" onClick={() => void checkPastePermission()}>{en ? "Check again" : "重新检测"}</button>
               <button className="primary" onClick={() => void openMacosPermission("accessibility").catch((error) => showToast(String(error)))}>{en ? "Accessibility" : "打开辅助功能设置"}</button>
               {permissionRetry && <button className="primary" disabled={working} onClick={() => { const retry = permissionRetry; setPastePermissionHelp(false); if (retry) void perform(retry.clip, true, retry.plain, retry.enter); }}>{en ? "Retry paste" : "重试粘贴"}</button>}
             </div>

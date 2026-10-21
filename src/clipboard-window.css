@@ -1,0 +1,48 @@
+/* Native window resize surfaces sit above chrome but below local dialogs. */
+.window-resize-handles { position: fixed; inset: 0; pointer-events: none; z-index: 40; }
+.window-resize-handle { position: absolute; pointer-events: auto; }
+.resize-North { top: 0; left: 24px; right: 24px; height: 6px; cursor: ns-resize; }
+.resize-South { bottom: 0; left: 24px; right: 24px; height: 6px; cursor: ns-resize; }
+.resize-East { right: 0; top: 24px; bottom: 24px; width: 6px; cursor: ew-resize; }
+.resize-West { left: 0; top: 24px; bottom: 24px; width: 6px; cursor: ew-resize; }
+.resize-NorthEast, .resize-NorthWest, .resize-SouthEast, .resize-SouthWest { width: 24px; height: 24px; }
+.resize-NorthEast { top: 0; right: 0; cursor: nesw-resize; }
+.resize-NorthWest { top: 0; left: 0; cursor: nwse-resize; }
+.resize-SouthEast { bottom: 0; right: 0; cursor: nwse-resize; }
+.resize-SouthWest { bottom: 0; left: 0; cursor: nesw-resize; }
+.clipboard-stage .clipboard-window-shell { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; position: relative; }
+.clipboard-window-header { min-height: 28px; display: flex; align-items: center; gap: 10px; cursor: grab; padding-inline: 8px; flex: none; }
+.clipboard-window-header strong { font-size: 14px; }
+.clipboard-window-header > span { font-size: 11px; color: var(--muted); flex: 1; }
+.clipboard-window-search { display: flex; align-items: center; gap: 10px; padding: 4px 10px; min-height: 40px; border: 1px solid var(--control-edge); background: var(--control-surface); border-radius: 12px; color: var(--muted); flex: none; }
+.clipboard-window-search input { min-width: 0; width: 100%; background: none; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 13px; }
+.clipboard-window-search:focus-within { border-color: var(--accent); }
+.clipboard-window-search input::placeholder { color: var(--muted); }
+.clipboard-window-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; flex: none; }
+.clipboard-window-controls label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.clipboard-window-controls select { background: var(--control-surface); color: var(--text); border: 1px solid var(--control-edge); border-radius: 7px; padding: 5px; font: inherit; }
+.clipboard-position-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: -4px 4px 0; flex: none; }
+.clipboard-stage .clipboard-workspace { border-radius: 12px; min-height: 0; }
+.clipboard-stage .clip-toolbar { padding: 5px 10px; }
+.clipboard-stage .clip-toolbar strong { display: none; }
+.clipboard-stage .clip-list { max-height: none; min-width: 0; }
+.clipboard-single-column .clip-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.clipboard-single-column .clip-detail { display: none; }
+.clipboard-single-column .clip-paste-hint, .clipboard-single-column .clip-footer { display: none; }
+.clipboard-single-column .clip-paste-bar > div { justify-content: flex-start; }
+.clipboard-single-column .clip-paste-bar button { font-size: 11px; padding-inline: 7px; }
+.clipboard-single-column .clip-paste-bar kbd { display: none; }
+.clipboard-window-toast { position: absolute; z-index: 56; left: 12px; right: 12px; bottom: 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--control-edge); padding: 12px; font-size: 12px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; box-shadow: var(--float-shadow); }
+.clipboard-stage .clip-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.paste-status { padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.paste-status code { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 11px; user-select: text; }
+@media (max-width: 620px) {
+  .clipboard-stage .clip-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .clipboard-stage .clip-detail { display: none; }
+  .clipboard-stage .clip-footer { display: none; }
+  .clipboard-stage .clip-paste-hint { display: none; }
+  .clipboard-stage .clip-paste-bar kbd { display: none; }
+  .clipboard-stage .clip-paste-bar button { font-size: 11px; padding-inline: 7px; white-space: nowrap; }
+  .clipboard-stage .clipboard-window-shell { padding: 10px; gap: 7px; }
+  .clipboard-stage .modal-shade { padding: 12px; }
+}

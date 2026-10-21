@@ -135,11 +135,10 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
     let state = app.state::<ClipboardRuntime>();
     let current = sequence();
     if let Some(seq) = current {
-        let mut previous = state.sequence.lock().map_err(|_| "剪贴板状态不可用")?;
+        let previous = state.sequence.lock().map_err(|_| "剪贴板状态不可用")?;
         if *previous == Some(seq) {
             return Ok(None);
         }
-        *previous = Some(seq);
     }
     let guard = context()?;
     let context = guard.as_ref().ok_or("无法访问系统剪贴板")?;
@@ -214,6 +213,11 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
         return Ok(None);
     }
     let id = format!("{:x}", hash.finalize());
+    // Only acknowledge a sequence after successfully reading the payload. A
+    // denied/temporarily unavailable pasteboard must be retried on the next tick.
+    if let Some(seq) = current {
+        *state.sequence.lock().map_err(|_| "剪贴板状态不可用")? = Some(seq);
+    }
     let mut previous = state.fingerprint.lock().map_err(|_| "剪贴板状态不可用")?;
     if *previous == id {
         return Ok(None);
@@ -366,15 +370,19 @@ pub async fn paste_clipboard_item(
     tauri::async_runtime::spawn_blocking(move || put_clipboard(&cloned, &clip, plain))
         .await
         .map_err(|_| "粘贴任务失败")??;
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
+    #[cfg(target_os = "macos")]
+    if !crate::macos_tools::paste_allowed() {
+        return Err("QIMIAO_MACOS_PASTE_PERMISSION".into());
     }
+    for label in ["main", "clipboard"] {
+        if let Some(window) = app.get_webview_window(label) { let _ = window.hide(); }
+    }
+    let paste_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(Duration::from_millis(180));
+        crate::tool_windows::restore_target(&paste_app)?;
         #[cfg(target_os = "macos")] {
-            let script = if press_enter { "tell application \"System Events\"\nkeystroke \"v\" using command down\ndelay 0.1\nkey code 36\nend tell" } else { "tell application \"System Events\" to keystroke \"v\" using command down" };
-            let output = std::process::Command::new("osascript").args(["-e", script]).output().map_err(|_| "无法调用系统粘贴")?;
-            if !output.status.success() { return Err("QIMIAO_MACOS_PASTE_PERMISSION".into()); }
+            crate::macos_tools::paste(press_enter)?;
         }
         #[cfg(target_os = "windows")] unsafe {
             use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;

@@ -142,6 +142,16 @@ export async function hideLauncher() {
     await invoke("hide_launcher");
   }
 }
+export async function openClipboardWindow() {
+  if (isTauri()) await desktopInvoke("open_clipboard_window");
+  else window.open(`${location.pathname}?window=clipboard`, "qimiao-clipboard", "width=820,height=560");
+}
+export async function configureClipboardWindow(options: import("./clipboard-window-state").ClipboardWindowPreferences, resize = false) {
+  if (isTauri()) await desktopInvoke("configure_clipboard_window", { options, resize });
+}
+export async function clipboardPasteStatus(): Promise<{ trusted: boolean; executable: string }> {
+  return isTauri() ? desktopInvoke("clipboard_paste_status") : { trusted: false, executable: "" };
+}
 export async function setGlobalHotkeys(settings: Pick<import("./types").Settings, "hotkey" | "clipboardHotkey" | "commandsHotkey">) {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");

@@ -1,16 +1,20 @@
 # 启喵（Qimiao）
 
-**智能跨平台启动器**
+**把应用、命令与灵感，汇进一个顺手的入口。**
 
 [English](README.en.md) · [下载最新版本](https://github.com/amiaoapp/qimiao/releases/latest)
 
-启喵是一款面向 macOS、Windows 和 Linux 的桌面启动器。它以 Launchpad 式应用首页为基础，将应用、命令、文件、剪贴板、计算、Emoji、快捷指令和 AI 查询整合到同一个搜索入口。
+启喵（Qimiao）是一款面向 macOS、Windows 和 Linux 的桌面效率启动器。按下快捷键，从应用、文件和命令开始；继续搜索剪贴板记录、即时计算、Emoji、快捷指令或 AI 查询。少翻窗口，少打断思路，让常用操作从一个入口自然开始。
 
 软件使用 Tauri 2、Rust、React 和 TypeScript 构建。中文名为“启喵”，英文名为 **Qimiao**；安装包使用 `Qimiao_` 或 `qimiao_` 前缀，应用图标以猫头和字母 Q 为标识。
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/amiaoapp/qimiao/releases/latest) 下载适用于 macOS、Windows 或 Linux 的安装包。
+前往 [GitHub Releases](https://github.com/amiaoapp/qimiao/releases/latest) 下载适用于 macOS、Windows 或 Linux 的安装包。启喵支持中英文搜索，也支持全拼和首字母匹配。
+
+## 界面预览
+
+![启喵应用启动台界面预览](https://github.com/user-attachments/assets/e279ef7c-510a-4219-9aaf-af7b8f4a0dfe)
 
 ## 功能
 

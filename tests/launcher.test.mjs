@@ -17,7 +17,30 @@ const commands = await importBundled("src/command-center.ts");
 const clipView = await importBundled("src/clipboard-view.ts");
 const folders = await importBundled("src/app-folders.ts");
 const hotkeys = await importBundled("src/hotkeys.ts");
+const clipWindow = await importBundled("src/clipboard-window-state.ts");
 const app = (name, extra = {}) => ({ id: name, name, path: `/Applications/${name}.app`, launchCount: 0, favorite: false, ...extra });
+
+test("clipboard window edits preserve new captures and concurrent unrelated metadata", () => {
+  const a = clipboard.textClip("First entry");
+  const b = { ...clipboard.textClip("Second entry"), id: "second" };
+  const newCapture = { ...clipboard.textClip("New capture"), id: "new" };
+  const current = [a, { ...b, title: "Changed by owner", updatedAt: b.updatedAt + 5 }, newCapture];
+  const edits = clipWindow.clipboardEdits([a, b], [{ ...a, pinned: true, updatedAt: a.updatedAt + 10 }, b]);
+  assert.equal(edits.changed.length, 1);
+  assert.deepEqual(edits.deleted, []);
+  const merged = clipboard.mergeClips(current, edits.changed, clipboard.defaultClipOptions);
+  assert.equal(merged.find((c) => c.id === a.id).pinned, true);
+  assert.equal(merged.find((c) => c.id === b.id).title, "Changed by owner");
+  assert.ok(merged.some((c) => c.id === newCapture.id));
+  const removed = clipWindow.clipboardEdits([a, b], [b]);
+  assert.deepEqual(removed.deleted, [a.id]);
+});
+
+test("clipboard placement and dimensions recover safely from invalid saved values", () => {
+  assert.deepEqual(clipWindow.normalizeClipboardWindow({ position: "unknown", width: NaN, height: Infinity }), clipWindow.defaultClipboardWindow);
+  assert.deepEqual(clipWindow.normalizeClipboardWindow({ position: "mouse", singleColumn: true, width: 1, height: 99999 }), { position: "mouse", singleColumn: true, width: 340, height: 1200 });
+  assert.equal(clipWindow.normalizeClipboardWindow({ position: "input" }).position, "input");
+});
 
 test("physical Ctrl and Command recordings stay distinct, including punctuation and Option characters", () => {
   const key = { key: "k", code: "KeyK", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false };

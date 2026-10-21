@@ -69,6 +69,7 @@ import {
   startWindowDrag,
   runSystemAction,
   setClipboardText,
+  openClipboardWindow,
 } from "./tauri";
 import { appSearchIndex, appDisplayName, matchesApp, categorizeApps } from "./app-catalog";
 import { findSystemActions, type SystemAction } from "./system-actions";
@@ -93,6 +94,8 @@ import { FolderCard, AppFolderDialog } from "./AppFolder";
 import { isFolderEntry, mergeAppFolders, renameAppFolder, leaveAppFolder } from "./app-folders";
 import { recordedHotkey, hotkeyLabel } from "./hotkeys";
 import {launchWithImmediateHide,type CommonCommand,type RecentCommand} from "./compact-results";
+import WindowResizeHandles from "./WindowResizeHandles";
+import { useClipboardHost } from "./useClipboardBridge";
 
 const load = <T,>(key: string, fallback: T): T => {
   try {
@@ -191,7 +194,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.1.1";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -273,6 +276,7 @@ export default function App() {
     }
     setSettings((s) => ({ ...s, ...p }));
   };
+  useClipboardHost(settings, clipboard, updateSettings);
   function mergeApps(current: AppItem[], incoming: AppItem[]) {
     const merged = new Map(current.map((app) => [app.path.toLowerCase(), app]));
     for (const app of applyAppPreferences(incoming,syncedAppPreferences)) {
@@ -446,7 +450,7 @@ export default function App() {
       ) return;
       event.preventDefault();
       setMode((current) => {
-        const modes: LauncherMode[] = ["apps", "commands", "clipboard"];
+        const modes: LauncherMode[] = ["apps", "commands"];
         const index = modes.indexOf(current);
         return modes[(index + (event.shiftKey ? modes.length - 1 : 1)) % modes.length];
       });
@@ -486,7 +490,7 @@ export default function App() {
       dispose = [
         await listen<string>("launcher-shown", (event) => {
           prepareLauncher();
-          if (event.payload === "clipboard" || event.payload === "commands") setMode(event.payload);
+          if (event.payload === "commands") setMode(event.payload);
         }),
         await listen("navigate-settings", () => setPage("settings")),
         await listen("check-update", () => void checkForUpdates()),
@@ -873,6 +877,7 @@ export default function App() {
       }
     }}>
       <div className="window-drag-region" title={settings.language === "en" ? "Drag to move window" : "拖动可移动窗口"}><span /></div>
+      <WindowResizeHandles />
       <section className="launcher-shell">
         <div className="content">
           {availableUpdate && (
@@ -1403,6 +1408,7 @@ function Header({
         ? en ? "Search clipboard history" : "搜索剪贴板历史"
         : en ? "Ask qimiao AI…" : "问启喵 AI…";
   const chooseMode = (next: LauncherMode) => {
+    if (next === "clipboard") { void openClipboardWindow().catch(console.warn); return; }
     setMode(next);
     setQuery("");
     requestAnimationFrame(() => inputRef.current?.focus());

@@ -1,16 +1,20 @@
 # Qimiao
 
-**A smart, cross-platform launcher**
+**Your apps, commands, and ideas—one effortless starting point.**
 
 [简体中文](README.md) · [Download the latest release](https://github.com/amiaoapp/qimiao/releases/latest)
 
-Qimiao is a desktop launcher for macOS, Windows, and Linux. Built around a Launchpad-style app home, it brings apps, commands, files, clipboard history, calculations, emoji, shortcuts, and AI queries together in one search interface.
+Qimiao is a productivity launcher for macOS, Windows, and Linux. Open it with a hotkey to find apps, files, or commands, then move naturally into clipboard history, quick calculations, emoji, shortcuts, or AI queries. Less window-hunting, fewer interruptions—a single place to get moving.
 
 Qimiao is built with Tauri 2, Rust, React, and TypeScript. Its Chinese name is “启喵.” Installers use the `Qimiao_` or `qimiao_` filename prefix, and the app icon pairs a cat-head mark with the letter Q.
 
 ## Download
 
-Download an installer for macOS, Windows, or Linux from [GitHub Releases](https://github.com/amiaoapp/qimiao/releases/latest).
+Download an installer for macOS, Windows, or Linux from [GitHub Releases](https://github.com/amiaoapp/qimiao/releases/latest). Search supports Chinese and English, as well as Pinyin and initials.
+
+## Preview
+
+![Qimiao launcher interface preview](https://github.com/user-attachments/assets/e279ef7c-510a-4219-9aaf-af7b8f4a0dfe)
 
 ## Features
 
