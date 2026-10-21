@@ -14,6 +14,10 @@ Qimiao is a Tauri 2 + Rust launcher for macOS, Windows, and Linux. It keeps a La
 
 [下载最新版本 / Download](https://github.com/amiaoapp/qimiao/releases/latest)
 
+1.1 更新：修复“启喵 / Qimiao”及常见应用的中英文双向搜索；macOS 剪贴板增加可直接打开系统设置的权限指引，快捷键录制区分 Ctrl 与 Command；应用图标可拖拽合并、展开、重命名和移出分组，支持备份与配置同步。
+
+Version 1.1 fixes bilingual app search, adds actionable macOS paste-permission guidance, distinguishes Control from Command when recording hotkeys, and introduces draggable, expandable app groups with editable names and configuration sync.
+
 ## 截图 / Screenshot
 
 <img width="2344" height="1504" alt="image" src="https://github.com/user-attachments/assets/e279ef7c-510a-4219-9aaf-af7b8f4a0dfe" />

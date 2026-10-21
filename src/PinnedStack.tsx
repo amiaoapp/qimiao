@@ -12,6 +12,7 @@ export default function PinnedStack({
   onExpandedChange,
   onOpen,
   onMenu,
+  onGroup,
 }: {
   apps: AppItem[];
   language: Settings["language"];
@@ -20,6 +21,7 @@ export default function PinnedStack({
   onExpandedChange: (expanded: boolean) => void;
   onOpen: (app: AppItem) => void;
   onMenu: (id: string, x: number, y: number) => void;
+  onGroup: (source: string, target: string) => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -93,6 +95,11 @@ export default function PinnedStack({
                 type="button"
                 key={app.id}
                 className="app-card compact pinned-stack-app"
+                draggable
+                onDragStart={(event) => { event.dataTransfer.setData("text/miaoqi-app", app.id); event.dataTransfer.effectAllowed = "move"; }}
+                onDragOver={(event) => { if (event.dataTransfer.types.includes("text/miaoqi-app")) { event.preventDefault(); event.currentTarget.classList.add("drop-target"); } }}
+                onDragLeave={(event) => event.currentTarget.classList.remove("drop-target")}
+                onDrop={(event) => { event.preventDefault(); event.currentTarget.classList.remove("drop-target"); onGroup(event.dataTransfer.getData("text/miaoqi-app"), app.id); }}
                 onClick={() => onOpen(app)}
                 onContextMenu={(event) => {
                   event.preventDefault();

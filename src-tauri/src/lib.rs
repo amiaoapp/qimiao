@@ -2674,10 +2674,10 @@ async fn load_app_icon(path: String, name: String) -> Result<String, String> {
 fn open_macos_permission(kind: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let pane = if kind == "accessibility" {
-            "Privacy_Accessibility"
-        } else {
-            "Privacy_ListenEvent"
+        let pane = match kind.as_str() {
+            "accessibility" => "Privacy_Accessibility",
+            "automation" => "Privacy_Automation",
+            _ => "Privacy_ListenEvent",
         };
         Command::new("open")
             .arg(format!(
@@ -3425,9 +3425,17 @@ mod tests {
             "Alt+Shift+Space",
             "CommandOrControl+Shift+V",
             "CommandOrControl+Shift+K",
+            "Control+KeyK",
+            "Command+KeyK",
+            "Control+Backquote",
+            "Control+Shift+Equal",
         ] {
             assert!(value.parse::<Shortcut>().is_ok(), "{value}");
         }
+    }
+    #[test]
+    fn physical_control_and_command_remain_distinct() {
+        assert_ne!(shortcut_from_text("Control+KeyK").unwrap().id(), shortcut_from_text("Command+KeyK").unwrap().id());
     }
     #[test]
     fn shortcut_bindings_route_independently_and_reject_duplicates() {

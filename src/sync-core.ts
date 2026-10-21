@@ -64,7 +64,7 @@ const portableKeys = [
 ] as const;
 export type AppPreference = Pick<
   AppItem,
-  "name" | "favorite" | "category" | "pinnedAt"
+  "name" | "favorite" | "category" | "pinnedAt" | "folder"
 >;
 export type PortableConfig = {
   format: "qimiao-configuration";
@@ -84,11 +84,12 @@ export function portableConfiguration(
     settings: Object.fromEntries(
       portableKeys.map((key) => [key, settings[key]]),
     ),
-    apps: apps.map(({ name, favorite, category, pinnedAt }) => ({
+    apps: apps.map(({ name, favorite, category, pinnedAt, folder }) => ({
       name,
       favorite,
       category,
       pinnedAt,
+      folder,
     })),
   };
 }
@@ -159,6 +160,8 @@ export function readPortableConfiguration(raw: string): PortableConfig {
         typeof a.pinnedAt === "number" && Number.isFinite(a.pinnedAt)
           ? a.pinnedAt
           : undefined,
+      folder: a.folder && typeof a.folder.id === "string" && a.folder.id.length > 0 && a.folder.id.length <= 100 && typeof a.folder.name === "string" && a.folder.name.trim()
+        ? { id: a.folder.id, name: a.folder.name.trim().slice(0, 40) } : undefined,
     }));
   return {
     format: "qimiao-configuration",
@@ -183,6 +186,7 @@ export function applyAppPreferences(
           favorite: p.favorite,
           category: p.category,
           pinnedAt: p.pinnedAt,
+          folder: p.folder,
         }
       : app;
   });

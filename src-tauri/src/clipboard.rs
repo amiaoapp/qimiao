@@ -374,7 +374,7 @@ pub async fn paste_clipboard_item(
         #[cfg(target_os = "macos")] {
             let script = if press_enter { "tell application \"System Events\"\nkeystroke \"v\" using command down\ndelay 0.1\nkey code 36\nend tell" } else { "tell application \"System Events\" to keystroke \"v\" using command down" };
             let output = std::process::Command::new("osascript").args(["-e", script]).output().map_err(|_| "无法调用系统粘贴")?;
-            if !output.status.success() { return Err("内容已复制。自动粘贴需要在系统设置中允许启喵的辅助功能 / 自动化权限，也可手动按 ⌘V".into()); }
+            if !output.status.success() { return Err("QIMIAO_MACOS_PASTE_PERMISSION".into()); }
         }
         #[cfg(target_os = "windows")] unsafe {
             use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;

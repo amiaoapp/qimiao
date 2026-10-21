@@ -1,4 +1,5 @@
 import type { AppItem } from "./types";
+import { folderEntries } from "./app-folders";
 
 export type LauncherArrowKey =
   | "ArrowLeft"
@@ -75,7 +76,7 @@ export function appPageLayout(
   const topRow = [...directPins, ...suggestions];
   const shelfCount = topRow.length + Number(stackPins);
   const topIds = new Set([...pinnedIds, ...topRow.map((app) => app.id)]);
-  const remainder = visible.filter((app) => !topIds.has(app.id));
+  const remainder = folderEntries(visible, searching).filter((app) => !topIds.has(app.id));
   const pageSize = shelfCount ? 21 : 28;
   const pageCount =
     view === "list" ? 1 : Math.max(1, Math.ceil(remainder.length / pageSize));

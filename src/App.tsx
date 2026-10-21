@@ -36,6 +36,7 @@ import {
   ChevronDown,
   ArrowUpDown,
   PanelTopClose,
+  Pencil,
 } from "lucide-react";
 import {
   defaultSettings,
@@ -88,6 +89,9 @@ import { normalizeSettings, portableConfiguration, applyAppPreferences, type App
 import CompactLauncher from "./CompactLauncher";
 import AppImporter from "./AppImporter";
 import PinnedStack from "./PinnedStack";
+import { FolderCard, AppFolderDialog } from "./AppFolder";
+import { isFolderEntry, mergeAppFolders, renameAppFolder, leaveAppFolder } from "./app-folders";
+import { recordedHotkey, hotkeyLabel } from "./hotkeys";
 import {launchWithImmediateHide,type CommonCommand,type RecentCommand} from "./compact-results";
 
 const load = <T,>(key: string, fallback: T): T => {
@@ -187,7 +191,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -243,6 +247,8 @@ export default function App() {
   } | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
   const [categoryManager, setCategoryManager] = useState(false);
+  const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const folderApps = apps.filter((app) => app.folder?.id === openFolderId);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(
     null,
   );
@@ -277,6 +283,7 @@ export default function App() {
         favorite: previous?.favorite ?? app.favorite,
         pinnedAt: previous ? previous.pinnedAt : app.pinnedAt,
         category: previous ? previous.category : app.category,
+        folder: previous ? previous.folder : app.folder,
         launchCount: previous?.launchCount ?? app.launchCount,
         lastUsed: previous?.lastUsed,
       });
@@ -403,7 +410,11 @@ export default function App() {
           document.querySelector<HTMLButtonElement>(".pinned-stack-toggle")?.focus();
           return;
         }
-        if (document.querySelector("[data-local-dialog]")) { (document.querySelector("[data-local-dialog] .clip-close") as HTMLButtonElement | null)?.click(); return; }
+        if (document.querySelector("[data-local-dialog]")) {
+          e.preventDefault(); e.stopImmediatePropagation();
+          (document.querySelector("[data-local-dialog] .clip-close") as HTMLButtonElement | null)?.click();
+          return;
+        }
         e.preventDefault();
         e.stopImmediatePropagation();
         setCategoryManager(false);
@@ -455,6 +466,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     const prepareLauncher = () => {
+      setOpenFolderId(null);
       setPage("home");
       setMode("apps");
       setQuery("");
@@ -581,6 +593,7 @@ export default function App() {
     if (appPage >= pageCount) setAppPage(pageCount - 1);
   }, [pageCount, appPage]);
   async function open(app: AppItem) {
+    if (isFolderEntry(app)) { setOpenFolderId(app.folder!.id); return; }
     if(openingRef.current)return;
     openingRef.current=true;
     try {
@@ -758,7 +771,7 @@ export default function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (page !== "home" || menu || categoryManager || pendingSystemAction || appImporterOpen || compactLayout || pinsExpanded) return;
+      if (page !== "home" || menu || categoryManager || pendingSystemAction || appImporterOpen || compactLayout || pinsExpanded || document.querySelector("[data-local-dialog]")) return;
       const ime =
         event.isComposing ||
         composingRef.current ||
@@ -843,15 +856,11 @@ export default function App() {
     const source = apps.find((a) => a.id === sourceId),
       target = apps.find((a) => a.id === targetId);
     if (!source || !target) return;
-    const folder =
-      target.category || source.category || `${target.name} 文件夹`;
-    setApps((list) =>
-      list.map((a) =>
-        a.id === sourceId || a.id === targetId ? { ...a, category: folder } : a,
-      ),
-    );
-    setCategory(folder);
-    showToast(`已移动到「${folder}」`);
+    const folder = target.folder ?? source.folder ?? { id: crypto.randomUUID(), name: settings.language === "en" ? "New group" : "新分组" };
+    setApps((list) => mergeAppFolders(list, sourceId, targetId, folder.id, folder.name));
+    setOpenFolderId(folder.id);
+    setPinsExpanded(false);
+    setMenu(null);
   }
   return (
     <main className={`stage ${compactLayout ? "compact-layout" : page === "home" && mode === "apps" && settings.viewMode === "list" ? "list-layout" : ""}`} onMouseDown={(event) => {
@@ -1115,6 +1124,7 @@ export default function App() {
                                 expanded={pinsExpanded}
                                 selected={selectedSearchIndex === actionCandidates.length}
                                 onExpandedChange={setPinsExpanded}
+                                onGroup={groupApps}
                                 onOpen={(app) => { setPinsExpanded(false); void open(app); }}
                                 onMenu={(id, x, y) => setMenu({ id, x, y })}
                               />
@@ -1141,7 +1151,11 @@ export default function App() {
                           key={`${appPage}-${category}-${settings.viewMode}`}
                           className={`${settings.viewMode} app-library page-enter`}
                         >
-                          {pageApps.map((a, index) => (
+                          {pageApps.map((a, index) => isFolderEntry(a) ? (
+                            <FolderCard key={a.id} apps={apps.filter((app) => app.folder?.id === a.folder!.id)} name={a.folder!.name}
+                              selected={index + actionCandidates.length + shelfCount === selectedSearchIndex}
+                              onOpen={() => setOpenFolderId(a.folder!.id)} onGroup={groupApps} />
+                          ) : (
                             <AppCard
                               key={a.id}
                               app={a}
@@ -1230,6 +1244,8 @@ export default function App() {
           y={menu.y}
           onClose={() => setMenu(null)}
           onFavorite={() => toggleFavorite(menu.id)}
+          onRenameGroup={(id) => { setMenu(null); setOpenFolderId(id); }}
+          onLeaveGroup={() => { setApps((list) => leaveAppFolder(list, menu.id)); setMenu(null); }}
           onCategory={(category) => {
             setApps((x) =>
               x.map((a) => (a.id === menu.id ? { ...a, category } : a)),
@@ -1277,6 +1293,10 @@ export default function App() {
           }}
         />
       )}
+      {openFolderId && folderApps.length > 0 && <AppFolderDialog key={openFolderId} apps={folderApps} language={settings.language}
+        onClose={() => setOpenFolderId(null)} onRename={(name) => setApps((list) => renameAppFolder(list, openFolderId, name))}
+        onOpen={(app) => { setOpenFolderId(null); void open(app); }}
+        onRemove={(id) => { setApps((list) => leaveAppFolder(list, id)); if (folderApps.length <= 2) setOpenFolderId(null); }} />}
       {aboutOpen && (
         <AboutDialog
           language={settings.language}
@@ -1631,6 +1651,8 @@ function ContextMenu({
   y,
   onClose,
   onFavorite,
+  onRenameGroup,
+  onLeaveGroup,
   onCategory,
   onRemove,
 }: {
@@ -1640,6 +1662,8 @@ function ContextMenu({
   y: number;
   onClose: () => void;
   onFavorite: () => void;
+  onRenameGroup: (name: string) => void;
+  onLeaveGroup: () => void;
   onCategory: (s: string) => void;
   onRemove: () => void;
 }) {
@@ -1669,6 +1693,7 @@ function ContextMenu({
           <Star />
           {app.favorite ? "取消收藏" : "收藏置顶"}
         </button>
+        {app.folder && <><button onClick={() => onRenameGroup(app.folder!.id)}><Pencil />重命名分组</button><button onClick={onLeaveGroup}><Folder />移出分组</button></>}
         <div className="menu-label">移动到分类</div>
         {categories.map((x) => (
           <button key={x} onClick={() => onCategory(x)}>
@@ -2496,6 +2521,7 @@ function HotkeyRecorder({
       return;
     }
     if (e.key === "Control") {
+      if (e.metaKey || e.altKey || e.shiftKey) return;
       const now = Date.now();
       if (now - lastControl.current < 430) {
         apply("DoubleControl");
@@ -2503,20 +2529,8 @@ function HotkeyRecorder({
       } else lastControl.current = now;
       return;
     }
-    const mods: string[] = [];
-    if (e.metaKey || e.ctrlKey) mods.push("CommandOrControl");
-    if (e.altKey) mods.push("Alt");
-    if (e.shiftKey) mods.push("Shift");
-    if (!mods.length) return;
-    const ignored = ["Meta", "Alt", "Shift"];
-    if (ignored.includes(e.key)) return;
-    const key =
-      e.code === "Space"
-        ? "Space"
-        : e.key.length === 1
-          ? e.key.toUpperCase()
-          : e.key;
-    apply([...mods, key].join("+"));
+    const next = recordedHotkey(e, navigator.userAgent.includes("Mac"));
+    if (next) void apply(next);
   }
   useEffect(() => {
     if (!recording) return;
@@ -2526,10 +2540,11 @@ function HotkeyRecorder({
     window.addEventListener("blur", cancel);
     return () => { window.removeEventListener("keydown", handler, true); window.removeEventListener("blur", cancel); };
   }, [recording]);
+  const isMac = navigator.userAgent.includes("Mac");
   const display =
     value === "DoubleControl"
       ? "双击 Ctrl"
-      : value ? value.replace("CommandOrControl", "⌘ / Ctrl").split("+").join("  +  ") : "已停用";
+      : value ? hotkeyLabel(value, isMac) : "已停用";
   return (
     <div className="hotkey-stack">
       <div className="hotkey-control">

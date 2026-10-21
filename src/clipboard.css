@@ -450,6 +450,8 @@
   font-size: 13px;
   line-height: 1.7;
 }
+.paste-permission-steps { padding-left: 20px; font-size: 13px; line-height: 1.7; }
+.paste-permission-actions { flex-wrap: wrap; }
 .clip-close {
   position: absolute;
   right: 18px;

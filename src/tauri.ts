@@ -172,7 +172,7 @@ export async function loadAppIcon(path: string, name: string): Promise<string> {
   }
   return "";
 }
-export async function openMacosPermission(kind: "input" | "accessibility") {
+export async function openMacosPermission(kind: "input" | "accessibility" | "automation") {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("open_macos_permission", { kind });

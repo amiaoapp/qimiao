@@ -47,7 +47,7 @@ import {
   type Clip,
   type ClipKind,
 } from "./clipboard-core";
-import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText } from "./tauri";
+import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText, openMacosPermission } from "./tauri";
 import { clipboardCategory, clipRelativeTime, clipLink } from "./clipboard-view";
 import type { Settings } from "./types";
 import "./clipboard.css";
@@ -101,6 +101,8 @@ export default function ClipboardPane({
   } | null>(null);
   const [clear, setClear] = useState(false),
     [working, setWorking] = useState(false);
+  const [pastePermissionHelp, setPastePermissionHelp] = useState(false);
+  const [permissionRetry, setPermissionRetry] = useState<{ clip: Clip; plain: boolean; enter: boolean } | null>(null);
   const [queue, setQueue] = useState<string[]>(() => {
     try {
       return JSON.parse(
@@ -227,7 +229,11 @@ export default function ClipboardPane({
       );
       return true;
     } catch (error) {
-      showToast(String(error));
+      if (String(error).includes("QIMIAO_MACOS_PASTE_PERMISSION")) {
+        setPermissionRetry({ clip, plain, enter });
+        setPastePermissionHelp(true);
+      }
+      else showToast(String(error));
       return false;
     } finally {
       setWorking(false);
@@ -323,6 +329,7 @@ export default function ClipboardPane({
           <span className="clip-count">{active.length}</span>
         </div>
         <div>
+          {navigator.userAgent.includes("Mac") && <button className="clip-icon-button" title={en ? "macOS paste permissions" : "macOS 粘贴权限指引"} aria-label={en ? "macOS paste permissions" : "macOS 粘贴权限指引"} onClick={() => { setPermissionRetry(null); setPastePermissionHelp(true); }}><ShieldCheck /></button>}
           <button
             className="clip-icon-button"
             disabled={!ready}
@@ -1096,6 +1103,32 @@ export default function ClipboardPane({
               >
                 {en ? (clear ? "Clear" : "Save") : clear ? "清空" : "保存"}
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {pastePermissionHelp && (
+        <div className="modal-shade" data-local-dialog onClick={() => setPastePermissionHelp(false)}>
+          <section className="clip-dialog" role="dialog" aria-modal="true" aria-labelledby="paste-permission-title" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+            if (event.key !== "Tab") return;
+            event.preventDefault();
+            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+            const index = controls.indexOf(document.activeElement as HTMLButtonElement);
+            controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
+          }}>
+            <button autoFocus className="clip-close" aria-label={en ? "Close" : "关闭"} onClick={() => setPastePermissionHelp(false)}><X /></button>
+            <h2 id="paste-permission-title">{en ? "Allow automatic paste on macOS" : "允许 macOS 自动粘贴"}</h2>
+            <p>{permissionRetry ? (en ? "Content is already copied. macOS blocked the simulated paste keystroke; you can paste manually with ⌘V." : "内容已经复制。macOS 阻止了模拟粘贴按键，你仍可切换到目标应用，手动按 ⌘V。") : (en ? "Automatic paste needs permission to send ⌘V to the target app." : "自动粘贴需要获得系统许可，才能向目标应用发送 ⌘V。")}</p>
+            <ol className="paste-permission-steps">
+              <li>{en ? "System Settings → Privacy & Security → Accessibility: enable Qimiao (启喵). If missing, click + and select Qimiao.app in Applications." : "系统设置 → 隐私与安全性 → 辅助功能：开启 Qimiao（启喵）。找不到时，点击“+”，在“应用程序”中选择 Qimiao.app。"}</li>
+              <li>{en ? "Privacy & Security → Automation: expand Qimiao and enable System Events. If it is not listed yet, retry pasting and choose Allow when macOS asks to control System Events." : "隐私与安全性 → 自动化：展开 Qimiao，开启 System Events（系统事件）。如果尚未列出，重试粘贴，并在系统询问是否允许控制 System Events 时选择“允许”。"}</li>
+              <li>{en ? "After enabling permissions, retry. If macOS still blocks it, quit and reopen Qimiao." : "授权后重试；如果仍被阻止，请退出并重新打开启喵。"}</li>
+            </ol>
+            <div className="clip-actions paste-permission-actions">
+              <button className="secondary" onClick={() => setPastePermissionHelp(false)}>{en ? "Close" : "关闭"}</button>
+              <button className="secondary" onClick={() => void openMacosPermission("automation").catch((error) => showToast(String(error)))}>{en ? "Automation" : "打开自动化设置"}</button>
+              <button className="primary" onClick={() => void openMacosPermission("accessibility").catch((error) => showToast(String(error)))}>{en ? "Accessibility" : "打开辅助功能设置"}</button>
+              {permissionRetry && <button className="primary" disabled={working} onClick={() => { const retry = permissionRetry; setPastePermissionHelp(false); if (retry) void perform(retry.clip, true, retry.plain, retry.enter); }}>{en ? "Retry paste" : "重试粘贴"}</button>}
             </div>
           </section>
         </div>

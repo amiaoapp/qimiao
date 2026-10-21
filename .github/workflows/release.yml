@@ -68,22 +68,19 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 Qimiao v__VERSION__
           releaseBody: |
-            启喵 Qimiao 1.0.0 正式版 / Stable release
+            启喵 Qimiao 1.1.0
 
-            - 正式英文名 Qimiao；猫头图标中间改为字母 Q，安装包使用英文前缀，修复下载文件名丢失软件名称的问题
-            - 修复上下左右键导航及命令/应用混合搜索排版；收藏超过三个时折叠到首个图标，其余位置保留智能推荐
-            - 简洁模式以窗口中心展开收起，并保持在当前显示器工作区内；Windows 液态材质与毛玻璃有独立视觉效果
-            - 剪贴板更新为横向分类、记录/预览双栏、右键操作和固定粘贴栏；支持文档/压缩包/应用分类、分组、敏感标记和拆分接力
-            - 剪贴板与命令中心新增独立全局快捷键，支持停用、冲突校验和注册失败回滚
-            - 命令中心完善文件搜索、词典、创建工具、执行输出与错误反馈；新增 JSON 格式化、UTF-8 Base64、时间戳、时间/温度单位换算
-            - Windows 窗口管理按目标屏幕工作区布局并返回错误；原生耗时命令移至后台线程。浏览器无法执行的本机功能明确提示需桌面版
-            - 沿用既有应用标识与本机数据；自有 WebDAV 仍默认关闭，敏感条目与本机文件路径不上传
+            - 修复中文“启喵”搜索不到 Qimiao 的问题；补齐常见应用的中英文双向别名，支持全拼、首字母、全角字母及应用文件名匹配，普通与简洁模式共用搜索逻辑
+            - macOS 剪贴板自动粘贴失败时显示具体授权步骤，可直接打开辅助功能和自动化设置；工具栏新增权限指引，支持授权后重试
+            - 快捷键录制区分 macOS 的 Ctrl 与 Command，修复反引号、加号和 Option 组合键的记录与显示
+            - 应用图标支持拖拽合并成可展开分组，可重命名、追加应用和移出应用；分组随本机设置、备份及 WebDAV 配置同步保存，保留应用原有分类和收藏状态
+            - 收藏堆叠内也支持拖拽合并；修复 Windows 原生文件拖放与界面图标拖拽的冲突
 
-            Qimiao 1.0 introduces a cat-and-Q identity and ASCII installer names. It fixes keyboard navigation, mixed search layout and center-anchored compact resizing; stacks more than three favorites while preserving suggestions; modernizes clipboard history with horizontal filters, split previews and context actions; adds independent clipboard/command global hotkeys; and improves command execution, file search, dictionary syntax, JSON/Base64/timestamp tools and unit conversion. The existing app identifier and device data are preserved. Clipboard features are selected PasteMemo adaptations, not a complete upstream port.
+            Qimiao 1.1 fixes bilingual app search, including 启喵 / Qimiao aliases, Pinyin and initials, full-width characters and executable names. It adds actionable macOS paste-permission guidance, preserves physical Control and Command shortcuts, and introduces draggable, expandable, renameable app groups with backup and configuration sync support.
 
-            验证：20 组前端测试、20 组 Rust 测试、前端生产构建及浏览器交互回归。发布构建覆盖下述平台。Windows 原生快捷键、跨应用粘贴、窗口管理和材质仍需实机验证；测试未实际执行关机等电源操作。
+            验证：24 组前端测试、21 组 Rust 测试、生产构建及浏览器交互回归。macOS 真实授权与跨应用粘贴、Windows 原生交互仍需实机验证。
 
-            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Native Windows interactions still need on-device verification; browser tests do not emulate an actual Windows desktop. Power actions were not executed during testing.
+            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Browser tests cover the permission-denial UI using a mock; actual macOS permission grants and cross-app pasting, and native Windows interactions, still need on-device verification.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: true

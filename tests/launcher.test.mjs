@@ -15,7 +15,43 @@ const sync = await importBundled("src/sync-core.ts");
 const compact = await importBundled("src/compact-results.ts");
 const commands = await importBundled("src/command-center.ts");
 const clipView = await importBundled("src/clipboard-view.ts");
+const folders = await importBundled("src/app-folders.ts");
+const hotkeys = await importBundled("src/hotkeys.ts");
 const app = (name, extra = {}) => ({ id: name, name, path: `/Applications/${name}.app`, launchCount: 0, favorite: false, ...extra });
+
+test("physical Ctrl and Command recordings stay distinct, including punctuation and Option characters", () => {
+  const key = { key: "k", code: "KeyK", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false };
+  assert.equal(hotkeys.recordedHotkey(key, true), "Control+KeyK");
+  assert.equal(hotkeys.recordedHotkey({ ...key, ctrlKey: false, metaKey: true }, true), "Command+KeyK");
+  assert.equal(hotkeys.recordedHotkey({ ...key, metaKey: true }, true), "Command+Control+KeyK");
+  assert.equal(hotkeys.recordedHotkey({ ...key, key: "`", code: "Backquote" }, true), "Control+Backquote");
+  assert.equal(hotkeys.recordedHotkey({ ...key, key: "+", code: "Equal", shiftKey: true }, true), "Control+Shift+Equal");
+  assert.equal(hotkeys.recordedHotkey({ ...key, key: "˚", altKey: true }, true), "Control+Alt+KeyK");
+  assert.equal(hotkeys.recordedHotkey({ ...key, key: "Control", code: "ControlLeft" }, true), null);
+  assert.equal(hotkeys.hotkeyLabel("Control+Backquote", true), "Ctrl  +  `");
+  assert.equal(hotkeys.hotkeyLabel("Command+KeyK", true), "⌘  +  K");
+});
+
+test("dragging merges folders without sweeping up unrelated categories or changing favorites", () => {
+  const apps = [app("a", { category: "开发工具", favorite: true }), app("b", { category: "开发工具" }), app("c", { category: "开发工具" }), app("d")];
+  const merged = folders.mergeAppFolders(apps, "a", "b", "group1", "工具");
+  assert.equal(merged[0].favorite, true);
+  assert.equal(merged[0].category, "开发工具");
+  assert.equal(merged[1].folder.id, "group1");
+  assert.equal(merged[2].folder, undefined);
+  assert.equal(folders.folderEntries(merged).length, 3);
+  assert.equal(folders.folderEntries(merged, true).length, 4);
+  const other = folders.mergeAppFolders(merged, "c", "d", "group2", "娱乐");
+  const joined = folders.mergeAppFolders(other, "a", "c", "unused", "unused");
+  assert.ok(joined.every((a) => a.folder.id === "group2"));
+  assert.ok(folders.renameAppFolder(joined, "group2", "  所有工具  ").every((a) => a.folder.name === "所有工具"));
+  assert.equal(folders.leaveAppFolder(merged, "a").filter((a) => a.folder).length, 0);
+  const page = layout.appPageLayout(merged, [merged[0]], [merged[1]], "grid", true, false, 0);
+  assert.ok(page.pageApps.some(folders.isFolderEntry), "shelf shortcuts must not remove the folder from the library");
+  assert.ok(!layout.appPageLayout(merged, [], [], "grid", false, true, 0).pageApps.some(folders.isFolderEntry));
+  const portable = sync.readPortableConfiguration(JSON.stringify(sync.portableConfiguration(sync.normalizeSettings({}), merged)));
+  assert.deepEqual(sync.applyAppPreferences(apps, portable.apps)[0].folder, merged[0].folder);
+});
 
 test("command helpers accept advertised dictionary syntax and preserve quoted arguments", () => {
   assert.equal(commands.dictionaryTerm("dict:hello"), "hello");
@@ -90,6 +126,30 @@ test("Chinese and pinyin aliases find English system applications", () => {
   assert.equal(catalog.appDisplayName(app("Terminal"), "en"), "Terminal");
   assert.equal(catalog.appDisplayName(app("Safari"), "zh"), "Safari");
   assert.equal(catalog.appDisplayName(app("Google Chrome"), "zh"), "Google Chrome");
+});
+
+test("Qimiao is searchable by Chinese, English, pinyin and initials in both launcher layouts", () => {
+  for (const name of ["Qimiao", "启喵", "启喵 · Qimiao", "Qimiao Launcher", "Ｑｉｍｉａｏ"]) {
+    const item = app(name);
+    for (const query of ["启喵", "qimiao", "QIMIAO", "qi miao", "qm", "ＱＩＭＩＡＯ", "启喵 qimiao"]) {
+      assert.ok(catalog.matchesApp(catalog.appSearchIndex(item), query), `${name}: ${query}`);
+      for (const en of [false, true]) {
+        assert.ok(compact.compactResults([item], query, en, "macos", [], []).some((result) => result.app?.id === item.id), `compact ${name}: ${query}`);
+      }
+    }
+  }
+});
+
+test("localized names, executable basenames and compact English spellings work in both directions", () => {
+  for (const [name, query] of [["终端", "terminal"], ["活动监视器", "activity monitor"], ["SystemSettings", "系统设置"], ["系统偏好设置", "preferences"], ["微信", "wechat"], ["WeChat", "weixin"], ["GoogleChrome", "谷歌"], ["谷歌浏览器", "chrome"], ["文件资源管理器", "explorer"], ["Taskmgr", "任务管理器"], ["Notepad", "记事本"], ["记事本", "notepad"], ["Calc", "计算器"], ["Powerpnt", "幻灯片"], ["FaceTime", "视频通话"], ["语音备忘录", "voice memos"], ["钉钉", "dingtalk"], ["BaiduNetdisk", "百度网盘"]]) {
+    assert.ok(catalog.matchesApp(catalog.appSearchIndex(app(name)), query), `${name}: ${query}`);
+  }
+  const renamed = app("My launcher", { path: "C:\\Apps\\Qimiao.exe" });
+  assert.ok(catalog.matchesApp(catalog.appSearchIndex(renamed), "启喵"));
+  assert.ok(catalog.matchesApp(catalog.appSearchIndex(app("我的软件", { path: "/Applications/OriginalName.app" })), "OriginalName"));
+  for (const item of [app("QimiaoHelper"), app("Unrelated", { path: "/Applications/Qimiao/Unrelated.app" })]) {
+    assert.equal(catalog.matchesApp(catalog.appSearchIndex(item), "启喵"), false);
+  }
 });
 
 test("smart classification uses only existing categories and preserves manual choices", () => {

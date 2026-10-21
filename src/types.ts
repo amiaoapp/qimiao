@@ -15,6 +15,7 @@ export type AppItem = {
   pinnedAt?: number;
   manual?: boolean;
   category?: string;
+  folder?: { id: string; name: string };
 };
 export type Theme = "system" | "light" | "dark";
 export type Material = "glass" | "liquid" | "solid";
