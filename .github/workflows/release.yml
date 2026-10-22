@@ -68,18 +68,17 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 Qimiao v__VERSION__
           releaseBody: |
-            启喵 Qimiao 1.1.2
+            启喵 Qimiao 1.1.3
 
-            - 提高剪贴板历史检测频率，改善连续复制时的记录完整性
-            - 可从启动台直接呼出剪贴板；选中内容后返回启动台并填入搜索框
-            - 支持拖到页码切换页面后继续合并启动台图标
-            - 窄窗口下剪贴板自动切换为不显示详情的单列布局，并调整顶部空间
+            - 改善微信等富文本应用的剪贴板记录兼容性，增加 HTML 转纯文本兜底
+            - 支持 UTF-8、UTF-16 以及自定义文本格式，改善 Parallels 等虚拟机复制内容读取
+            - 不再误过滤普通的 TransientType 剪贴板内容，继续保留敏感 ConcealedType 过滤
 
-            Qimiao 1.1.2 improves clipboard history polling, lets you use clipboard items alongside the launcher, supports dragging icons across pages to create groups, and adapts the clipboard layout to narrow windows.
+            Qimiao 1.1.3 improves clipboard compatibility with WeChat and other rich-text apps, including an HTML-to-text fallback. It reads UTF-8, UTF-16, and custom text formats to better support copies from Parallels and other virtual machines, while retaining the sensitive ConcealedType filter.
 
-            验证：前端回归测试、生产构建、macOS 与 Windows Rust 编译检查。实机连续高频复制及跨窗口交互仍需设备验证。
+            验证：剪贴板 UTF-8、UTF-16、HTML 单元测试，前端回归测试、生产构建及 Rust 编译检查。微信、Parallels 等真实应用的复制行为仍需在目标设备上确认。
 
-            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). High-frequency clipboard capture and cross-window interactions still need on-device verification.
+            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Real-app clipboard behavior still needs on-device verification.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: true

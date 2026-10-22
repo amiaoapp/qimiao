@@ -131,6 +131,125 @@ fn source_app() -> (String, String) {
     }
     (String::new(), String::new())
 }
+
+fn plausible_text(value: String) -> Option<String> {
+    let value = value.trim_end_matches('\0').to_string();
+    if value.trim().is_empty() || value.contains('\0') {
+        return None;
+    }
+    let controls = value
+        .chars()
+        .filter(|character| {
+            character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+        })
+        .count();
+    (controls * 20 < value.chars().count()).then_some(value)
+}
+
+fn decode_text_buffer(format: &str, bytes: &[u8]) -> Option<String> {
+    let name = format.to_ascii_lowercase();
+    if bytes.starts_with(&[0xff, 0xfe])
+        || bytes.starts_with(&[0xfe, 0xff])
+        || (name.contains("utf16") || name.contains("unicode"))
+    {
+        let mut units = Vec::with_capacity(bytes.len() / 2);
+        let (body, little_endian) = if bytes.starts_with(&[0xff, 0xfe]) {
+            (&bytes[2..], true)
+        } else if bytes.starts_with(&[0xfe, 0xff]) {
+            (&bytes[2..], false)
+        } else {
+            (bytes, true)
+        };
+        for pair in body.chunks_exact(2) {
+            units.push(if little_endian {
+                u16::from_le_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_be_bytes([pair[0], pair[1]])
+            });
+        }
+        return String::from_utf16(&units).ok().and_then(plausible_text);
+    }
+    String::from_utf8(bytes.to_vec()).ok().and_then(plausible_text)
+}
+
+fn html_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    let mut tag = String::new();
+    for character in html.chars() {
+        if character == '<' {
+            in_tag = true;
+            tag.clear();
+            continue;
+        }
+        if in_tag {
+            if character == '>' {
+                let name = tag.trim_start().to_ascii_lowercase();
+                if name.starts_with("br")
+                    || name.starts_with("p")
+                    || name.starts_with("div")
+                    || name.starts_with("li")
+                {
+                    text.push('\n');
+                }
+                in_tag = false;
+            } else {
+                tag.push(character);
+            }
+            continue;
+        }
+        text.push(character);
+    }
+    [
+        ("&nbsp;", " "),
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+    ]
+    .into_iter()
+    .fold(text, |text, (from, to)| text.replace(from, to))
+    .trim()
+    .to_string()
+}
+
+fn read_text_payload(context: &ClipboardContext, formats: &[String]) -> String {
+    if let Some(text) = context.get_text().ok().and_then(plausible_text) {
+        return text;
+    }
+
+    // Some apps (notably virtual machines and rich-text editors) publish a
+    // usable UTF-8/UTF-16 representation without NSPasteboardTypeString.
+    let mut candidates = formats.iter().filter(|format| {
+        let name = format.to_ascii_lowercase();
+        !name.contains("html")
+            && !name.contains("rtf")
+            && !name.contains("png")
+            && !name.contains("tiff")
+            && !name.contains("file")
+            && !name.contains("url")
+            && !name.contains("concealed")
+            && !name.contains("transient")
+    });
+    if let Some(text) = candidates.find_map(|format| {
+        context
+            .get_buffer(format)
+            .ok()
+            .filter(|bytes| bytes.len() <= 1_000_000)
+            .and_then(|bytes| decode_text_buffer(format, &bytes))
+    }) {
+        return text;
+    }
+
+    context
+        .get_html()
+        .ok()
+        .filter(|html| html.len() <= 1_000_000)
+        .map(|html| html_text(&html))
+        .unwrap_or_default()
+}
+
 fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Value>, String> {
     let state = app.state::<ClipboardRuntime>();
     let current = sequence();
@@ -153,11 +272,11 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
     let formats = context.available_formats().unwrap_or_default();
     if formats
         .iter()
-        .any(|format| format.contains("ConcealedType") || format.contains("TransientType"))
+        .any(|format| format.to_ascii_lowercase().contains("concealedtype"))
     {
         return Ok(None);
     }
-    let text = context.get_text().unwrap_or_default();
+    let text = read_text_payload(context, &formats);
     if text.len() > 1_000_000 {
         return Err("剪贴板文本超过 1 MB，已跳过记录".into());
     }
@@ -452,6 +571,43 @@ pub async fn export_clipboard_item(
     })
     .await
     .map_err(|_| "导出任务失败")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_text_buffer, html_text};
+
+    #[test]
+    fn decodes_utf8_and_utf16_clipboard_payloads() {
+        assert_eq!(
+            decode_text_buffer("public.utf8-plain-text", "微信复制".as_bytes()).as_deref(),
+            Some("微信复制")
+        );
+        assert_eq!(
+            decode_text_buffer(
+                "public.utf16-plain-text",
+                &[0xff, 0xfe, 0xae, 0x5f, 0xe1, 0x4f, 0x0d, 0x59, 0x36, 0x52],
+            )
+            .as_deref(),
+            Some("微信复制")
+        );
+        assert_eq!(
+            decode_text_buffer(
+                "public.utf16-plain-text",
+                &[0xae, 0x5f, 0xe1, 0x4f, 0x0d, 0x59, 0x36, 0x52],
+            )
+                .as_deref(),
+            Some("微信复制")
+        );
+    }
+
+    #[test]
+    fn extracts_text_from_html_fallback() {
+        assert_eq!(
+            html_text("<p>Hello &amp; world</p><div>Qimiao</div>"),
+            "Hello & world\nQimiao"
+        );
+    }
 }
 #[tauri::command]
 pub async fn webdav_image(
