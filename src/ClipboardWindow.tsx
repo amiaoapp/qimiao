@@ -64,7 +64,7 @@ export default function ClipboardWindow() {
       const resized = await getCurrentWindow().onResized(async ({ payload }) => {
         const scale = await getCurrentWindow().scaleFactor();
         if (disposed) return;
-        const next = normalizeClipboardWindow({ ...latestPrefs.current, width: payload.width / scale, height: payload.height / scale });
+        const next = normalizeClipboardWindow({ ...latestPrefs.current, width: payload.width / scale, height: payload.height / scale, singleColumn: payload.width / scale < 560 || latestPrefs.current.singleColumn });
         latestPrefs.current = next;
         setPreferences(next);
         localStorage.setItem("qimiao-clipboard-window", JSON.stringify(next));

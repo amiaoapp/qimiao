@@ -194,7 +194,7 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "1.1.1";
+const APP_VERSION = "1.1.2";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {
@@ -493,6 +493,12 @@ export default function App() {
           if (event.payload === "commands") setMode(event.payload);
         }),
         await listen("navigate-settings", () => setPage("settings")),
+        await listen<string>("clipboard-insert-search", (event) => {
+          setPage("home");
+          setMode("apps");
+          setQuery(event.payload);
+          requestAnimationFrame(() => searchRef.current?.focus());
+        }),
         await listen("check-update", () => void checkForUpdates()),
       ];
     });
@@ -1192,6 +1198,12 @@ export default function App() {
                                 aria-label={`第 ${i + 1} 页`}
                                 key={i}
                                 className={i === appPage ? "active" : ""}
+                                onDragOver={(event) => {
+                                  if (event.dataTransfer.types.includes("text/miaoqi-app")) {
+                                    event.preventDefault();
+                                    setAppPage(i);
+                                  }
+                                }}
                                 onClick={() => setAppPage(i)}
                               />
                             ))}

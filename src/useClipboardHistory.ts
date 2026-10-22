@@ -121,7 +121,7 @@ export function useClipboardHistory(settings: Settings) {
       }
     };
     void capture();
-    const timer = setInterval(capture, 900);
+    const timer = setInterval(capture, 100);
     return () => {
       active = false;
       clearInterval(timer);

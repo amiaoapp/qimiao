@@ -68,18 +68,18 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 Qimiao v__VERSION__
           releaseBody: |
-            启喵 Qimiao 1.1.1
+            启喵 Qimiao 1.1.2
 
-            - 修复 macOS 剪贴板变化读取失败后记录漏采的问题；使用原生按键事件进行自动粘贴，并在权限说明中显示当前运行进程与授权状态
-            - 剪贴板历史现在拥有独立窗口，可选择跟随鼠标、靠近输入窗口或居中显示；支持单列布局、独立快捷键呼出与缩放
-            - 改善窗口置顶和焦点恢复；修复启动台四角拖动缩放
-            - 剪贴板窗口编辑与启动台历史同步，避免在历史初始化期间覆盖记录
+            - 提高剪贴板历史检测频率，改善连续复制时的记录完整性
+            - 可从启动台直接呼出剪贴板；选中内容后返回启动台并填入搜索框
+            - 支持拖到页码切换页面后继续合并启动台图标
+            - 窄窗口下剪贴板自动切换为不显示详情的单列布局，并调整顶部空间
 
-            Qimiao 1.1.1 improves macOS clipboard capture and native paste, adds an independent clipboard window with flexible placement and single-column layout, improves window focus behavior, and fixes corner resizing.
+            Qimiao 1.1.2 improves clipboard history polling, lets you use clipboard items alongside the launcher, supports dragging icons across pages to create groups, and adapts the clipboard layout to narrow windows.
 
-            验证：前端回归测试、生产构建、macOS 与 Windows Rust 交叉编译检查。macOS 实际权限授权与跨应用粘贴、Windows 原生交互仍需实机验证。
+            验证：前端回归测试、生产构建、macOS 与 Windows Rust 编译检查。实机连续高频复制及跨窗口交互仍需设备验证。
 
-            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Actual macOS permission grants and cross-app pasting, and native Windows interactions, still need on-device verification.
+            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). High-frequency clipboard capture and cross-window interactions still need on-device verification.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: true

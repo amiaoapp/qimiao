@@ -13,7 +13,7 @@ use std::{
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[derive(Default)]
 pub struct ClipboardRuntime {
@@ -367,9 +367,21 @@ pub async fn paste_clipboard_item(
     press_enter: bool,
 ) -> Result<(), String> {
     let cloned = app.clone();
-    tauri::async_runtime::spawn_blocking(move || put_clipboard(&cloned, &clip, plain))
+    let paste_clip = clip.clone();
+    tauri::async_runtime::spawn_blocking(move || put_clipboard(&cloned, &paste_clip, plain))
         .await
         .map_err(|_| "粘贴任务失败")??;
+    if *app.state::<crate::tool_windows::ToolWindows>().launcher_target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+        if let Some(window) = app.get_webview_window("clipboard") { let _ = window.hide(); }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        if let Some(text) = clip.get("text").and_then(Value::as_str).filter(|text| !text.is_empty()) {
+            let _ = app.emit_to("main", "clipboard-insert-search", text);
+        }
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     if !crate::macos_tools::paste_allowed() {
         return Err("QIMIAO_MACOS_PASTE_PERMISSION".into());

@@ -3170,6 +3170,9 @@ pub fn run() {
                 let _ = refresh_windows_rounded_region(window);
             }
             if matches!(event, tauri::WindowEvent::Focused(false)) {
+                if window.label() == "main" && window.app_handle().get_webview_window("clipboard").is_some_and(|clipboard| clipboard.is_visible().unwrap_or(false)) {
+                    return;
+                }
                 if window.app_handle().state::<WindowRuntime>().should_hide() {
                     let _ = window.hide();
                 }

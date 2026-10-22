@@ -13,6 +13,7 @@ pub struct ClipboardWindowOptions {
 pub struct ToolWindows {
     options: Mutex<ClipboardWindowOptions>,
     target: Mutex<Option<isize>>,
+    pub(crate) launcher_target: Mutex<bool>,
 }
 
 pub fn remember_target(app: &tauri::AppHandle) {
@@ -245,12 +246,11 @@ pub fn show_clipboard(app: &tauri::AppHandle, toggle: bool) {
             let _ = window.hide();
             return;
         }
-        remember_target(app);
+        let launcher_target = app.get_webview_window("main").is_some_and(|main| main.is_focused().unwrap_or(false));
+        if let Ok(mut target) = app.state::<ToolWindows>().launcher_target.lock() { *target = launcher_target; }
+        if !launcher_target { remember_target(app); }
         app.state::<crate::WindowRuntime>()
             .protect_focus(std::time::Duration::from_millis(300));
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.hide();
-        }
         position_clipboard(app, &window);
         raise(&window);
         let _ = window.show();

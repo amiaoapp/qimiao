@@ -10,8 +10,8 @@
 .resize-NorthWest { top: 0; left: 0; cursor: nwse-resize; }
 .resize-SouthEast { bottom: 0; right: 0; cursor: nwse-resize; }
 .resize-SouthWest { bottom: 0; left: 0; cursor: nesw-resize; }
-.clipboard-stage .clipboard-window-shell { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; position: relative; }
-.clipboard-window-header { min-height: 28px; display: flex; align-items: center; gap: 10px; cursor: grab; padding-inline: 8px; flex: none; }
+.clipboard-stage .clipboard-window-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px; gap: 6px; position: relative; }
+.clipboard-stage .clipboard-window-header { height: 34px; min-height: 34px; display: flex; grid-template-columns: none; align-items: center; gap: 10px; cursor: grab; padding-inline: 4px; margin: 0; flex: none; }
 .clipboard-window-header strong { font-size: 14px; }
 .clipboard-window-header > span { font-size: 11px; color: var(--muted); flex: 1; }
 .clipboard-window-search { display: flex; align-items: center; gap: 10px; padding: 4px 10px; min-height: 40px; border: 1px solid var(--control-edge); background: var(--control-surface); border-radius: 12px; color: var(--muted); flex: none; }
@@ -23,13 +23,19 @@
 .clipboard-window-controls select { background: var(--control-surface); color: var(--text); border: 1px solid var(--control-edge); border-radius: 7px; padding: 5px; font: inherit; }
 .clipboard-position-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: -4px 4px 0; flex: none; }
 .clipboard-stage .clipboard-workspace { border-radius: 12px; min-height: 0; }
+.clipboard-stage .clip-toolbar { min-height: 42px; }
+.clipboard-stage .clip-sidebar { padding-block: 4px; }
 .clipboard-stage .clip-toolbar { padding: 5px 10px; }
 .clipboard-stage .clip-toolbar strong { display: none; }
 .clipboard-stage .clip-list { max-height: none; min-width: 0; }
 .clipboard-single-column .clip-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.clipboard-single-column .clip-list { border-right: 0; }
 .clipboard-single-column .clip-detail { display: none; }
 .clipboard-single-column .clip-paste-hint, .clipboard-single-column .clip-footer { display: none; }
 .clipboard-single-column .clip-paste-bar > div { justify-content: flex-start; }
+.clipboard-single-column .clip-paste-bar { justify-content: flex-start; overflow-x: auto; }
+.clipboard-single-column .clip-paste-bar > div { flex-wrap: nowrap; }
+.clipboard-single-column .clip-paste-bar button { flex: none; }
 .clipboard-single-column .clip-paste-bar button { font-size: 11px; padding-inline: 7px; }
 .clipboard-single-column .clip-paste-bar kbd { display: none; }
 .clipboard-window-toast { position: absolute; z-index: 56; left: 12px; right: 12px; bottom: 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--control-edge); padding: 12px; font-size: 12px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; box-shadow: var(--float-shadow); }
@@ -37,6 +43,7 @@
 .paste-status { padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
 .paste-status code { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 11px; user-select: text; }
 @media (max-width: 620px) {
+  html[data-window="clipboard"], html[data-window="clipboard"] body, html[data-window="clipboard"] #root { min-width: 0; min-height: 0; width: 100%; height: 100%; }
   .clipboard-stage .clip-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .clipboard-stage .clip-detail { display: none; }
   .clipboard-stage .clip-footer { display: none; }
