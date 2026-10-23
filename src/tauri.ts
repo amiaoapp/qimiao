@@ -1,6 +1,7 @@
 import type { AppItem } from "./types";
 import type { Clip } from "./clipboard-core";
 import type { DavOptions } from "./types";
+import type { ClipboardFileInfo } from "./clipboard-view";
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 async function desktopInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -8,6 +9,9 @@ async function desktopInvoke<T>(command: string, args?: Record<string, unknown>)
 }
 export async function clipboardSnapshot(ignoredApps: string[]): Promise<Clip | null> {
   return isTauri() ? desktopInvoke("clipboard_snapshot", { ignoredApps }) : null;
+}
+export async function clipboardFileInfo(paths: string[]): Promise<ClipboardFileInfo[]> {
+  return isTauri() ? desktopInvoke("clipboard_file_info", { paths }) : paths.map((path) => ({ path }));
 }
 export async function loadClipHistory(): Promise<unknown> {
   return isTauri() ? desktopInvoke("load_clipboard_history") : JSON.parse(localStorage.getItem("qimiao-clips-v2") ?? "[]");

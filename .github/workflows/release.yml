@@ -68,17 +68,19 @@ jobs:
           tagName: v__VERSION__
           releaseName: 启喵 Qimiao v__VERSION__
           releaseBody: |
-            启喵 Qimiao 1.1.3
+            启喵 Qimiao 1.1.4
 
-            - 改善微信等富文本应用的剪贴板记录兼容性，增加 HTML 转纯文本兜底
-            - 支持 UTF-8、UTF-16 以及自定义文本格式，改善 Parallels 等虚拟机复制内容读取
-            - 不再误过滤普通的 TransientType 剪贴板内容，继续保留敏感 ConcealedType 过滤
+            - Windows 恢复 24px 圆角，修复临时焦点保护导致失焦后不自动隐藏的问题
+            - 参考 liquid-glass-react 改进液态玻璃的边缘折射、高光与阴影，保持文字、图标清晰
+            - 修复顶部工具栏、视图切换和剪贴板按钮的图标居中
+            - 剪贴板图片、文件显示 B / KB / MB 等大小，区分文件类型图标，无法读取大小时不再误显示为 0 B
+            - 优化小尺寸剪贴板的顶部间距，保留单列记录和大小标签
 
-            Qimiao 1.1.3 improves clipboard compatibility with WeChat and other rich-text apps, including an HTML-to-text fallback. It reads UTF-8, UTF-16, and custom text formats to better support copies from Parallels and other virtual machines, while retaining the sensitive ConcealedType filter.
+            Qimiao 1.1.4 restores rounded Windows corners and fixes deferred hiding after focus loss. It refines liquid-glass refraction, highlights and shadows, aligns toolbar icons, and adds image and file sizes to clipboard history. Smaller clipboard windows keep a compact single-column layout with visible size labels.
 
-            验证：剪贴板 UTF-8、UTF-16、HTML 单元测试，前端回归测试、生产构建及 Rust 编译检查。微信、Parallels 等真实应用的复制行为仍需在目标设备上确认。
+            验证：28 项前端测试、28 项 Rust 测试、10 组浏览器界面检查、生产构建及 Windows 交叉编译检查通过。Windows 实机的失焦行为和桌面透明合成仍需安装验证。
 
-            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Real-app clipboard behavior still needs on-device verification.
+            Downloads: macOS Apple Silicon / Intel, Windows x64 NSIS, Linux x64 / ARM64 (deb, rpm, AppImage). Native Windows focus and transparency behavior still needs on-device verification.
 
             macOS 构建使用 ad-hoc 签名；Windows 和 Linux 构建未使用商业证书签名。
           releaseDraft: true

@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -105,19 +105,22 @@ struct ShortcutRuntime {
 struct WindowRuntime {
     native_dialog_open: AtomicBool,
     ignore_blur_until: Mutex<Option<Instant>>,
+    blur_revision: AtomicU64,
 }
 impl Default for WindowRuntime {
     fn default() -> Self {
         Self {
             native_dialog_open: AtomicBool::new(false),
             ignore_blur_until: Mutex::new(None),
+            blur_revision: AtomicU64::new(0),
         }
     }
 }
 impl WindowRuntime {
     fn protect_focus(&self, duration: Duration) {
         if let Ok(mut until) = self.ignore_blur_until.lock() {
-            *until = Some(Instant::now() + duration);
+            let deadline = Instant::now() + duration;
+            *until = Some(until.map_or(deadline, |previous| previous.max(deadline)));
         }
     }
     fn should_hide(&self) -> bool {
@@ -129,6 +132,33 @@ impl WindowRuntime {
             .map(|until| !until.is_some_and(|deadline| Instant::now() < deadline))
             .unwrap_or(true)
     }
+}
+
+fn hide_after_blur(app: &tauri::AppHandle) {
+    let revision = app.state::<WindowRuntime>().blur_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(120));
+        let runtime = app.state::<WindowRuntime>();
+        if runtime.blur_revision.load(Ordering::SeqCst) != revision {
+            return;
+        }
+        let windows: Vec<_> = ["main", "clipboard"].iter()
+            .filter_map(|label| app.get_webview_window(label))
+            .filter(|window| window.is_visible().unwrap_or(false))
+            .collect();
+        // Focus can move between our two windows without leaving the app.
+        if windows.is_empty() || windows.iter().any(|window| window.is_focused().unwrap_or(true)) {
+            return;
+        }
+        // A temporary resize/startup guard must defer the blur, not discard it.
+        if runtime.should_hide() {
+            for window in windows {
+                let _ = window.hide();
+            }
+            return;
+        }
+    });
 }
 impl Default for ShortcutRuntime {
     fn default() -> Self {
@@ -2724,9 +2754,8 @@ fn set_windows_rounded_region(hwnd: isize, _size: tauri::PhysicalSize<u32>, _sca
         ) -> i32;
     }
 
-    // A GDI round region is binary (jagged) and its 26px radius disagreed with
-    // WebView's anti-aliased mask. Clear it, disable the second DWM curve and
-    // let ONE 6px CSS surface supply per-pixel-alpha corners on Win10/11.
+    // One anti-aliased 24px web surface owns the corners on Win10/11;
+    // stacking a binary GDI mask or a second DWM curve makes them jagged.
     let preference: u32 = 1; // DWMWCP_DONOTROUND
     let color_none: u32 = 0xffff_fffe;
     unsafe {
@@ -3169,12 +3198,15 @@ pub fn run() {
                     .protect_focus(Duration::from_millis(500));
                 let _ = refresh_windows_rounded_region(window);
             }
-            if matches!(event, tauri::WindowEvent::Focused(false)) {
-                if window.label() == "main" && window.app_handle().get_webview_window("clipboard").is_some_and(|clipboard| clipboard.is_visible().unwrap_or(false)) {
-                    return;
-                }
-                if window.app_handle().state::<WindowRuntime>().should_hide() {
-                    let _ = window.hide();
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if *focused {
+                    let runtime = window.app_handle().state::<WindowRuntime>();
+                    runtime.blur_revision.fetch_add(1, Ordering::SeqCst);
+                    if let Ok(mut until) = runtime.ignore_blur_until.lock() {
+                        *until = None;
+                    };
+                } else {
+                    hide_after_blur(window.app_handle());
                 }
             }
         })
@@ -3185,6 +3217,7 @@ pub fn run() {
             tool_windows::start_tool_resize,
             fonts::list_local_fonts,
             clipboard::clipboard_snapshot,
+            clipboard::clipboard_file_info,
             clipboard::load_clipboard_history,
             clipboard::save_clipboard_history,
             clipboard::copy_clipboard_item,
@@ -3229,6 +3262,33 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running qimiao");
+}
+
+#[cfg(test)]
+mod window_focus_tests {
+    use super::*;
+
+    #[test]
+    fn temporary_blur_guards_expire_and_shorter_guards_do_not_cut_them_short() {
+        let runtime = WindowRuntime::default();
+        assert!(runtime.should_hide());
+        runtime.protect_focus(Duration::from_secs(8));
+        let deadline = *runtime.ignore_blur_until.lock().unwrap();
+        runtime.protect_focus(Duration::from_millis(500));
+        assert_eq!(*runtime.ignore_blur_until.lock().unwrap(), deadline);
+        assert!(!runtime.should_hide());
+        *runtime.ignore_blur_until.lock().unwrap() = Some(Instant::now() - Duration::from_millis(1));
+        assert!(runtime.should_hide());
+    }
+
+    #[test]
+    fn native_dialogs_protect_focus_until_they_close() {
+        let runtime = WindowRuntime::default();
+        runtime.native_dialog_open.store(true, Ordering::SeqCst);
+        assert!(!runtime.should_hide());
+        runtime.native_dialog_open.store(false, Ordering::SeqCst);
+        assert!(runtime.should_hide());
+    }
 }
 
 #[cfg(any())]

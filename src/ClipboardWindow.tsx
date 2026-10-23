@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ClipboardPane from "./ClipboardPane";
 import WindowResizeHandles from "./WindowResizeHandles";
+import LiquidGlassSurface from "./LiquidGlassSurface";
 import { useClipboardClient } from "./useClipboardBridge";
 import { normalizeSettings } from "./sync-core";
 import { normalizeClipboardWindow, type ClipboardWindowPreferences } from "./clipboard-window-state";
@@ -82,6 +83,7 @@ export default function ClipboardWindow() {
   }, []);
   return <main className={`stage clipboard-stage ${preferences.singleColumn ? "clipboard-single-column" : ""}`}>
     <section className="launcher-shell clipboard-window-shell">
+      <LiquidGlassSurface enabled={settings.material === "liquid"} radius={document.documentElement.dataset.platform === "windows" ? 24 : 26} />
       <header className="clipboard-window-header" onMouseDown={(event) => {
         if (event.button === 0 && !(event.target as Element).closest("button,input,select")) void startWindowDrag();
       }}>

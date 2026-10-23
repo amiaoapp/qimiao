@@ -15,10 +15,47 @@ const sync = await importBundled("src/sync-core.ts");
 const compact = await importBundled("src/compact-results.ts");
 const commands = await importBundled("src/command-center.ts");
 const clipView = await importBundled("src/clipboard-view.ts");
+const glass = await importBundled("src/liquid-glass.ts");
 const folders = await importBundled("src/app-folders.ts");
 const hotkeys = await importBundled("src/hotkeys.ts");
 const clipWindow = await importBundled("src/clipboard-window-state.ts");
 const app = (name, extra = {}) => ({ id: name, name, path: `/Applications/${name}.app`, launchCount: 0, favorite: false, ...extra });
+
+test("clipboard byte sizes preserve original image bytes and do not invent missing file sizes", () => {
+  assert.equal(clipView.formatBytes(0), "0 B");
+  assert.equal(clipView.formatBytes(1024), "1 KB");
+  assert.equal(clipView.formatBytes(1536), "1.5 KB");
+  assert.equal(clipView.formatBytes(5 * 1024 ** 2), "5 MB");
+  assert.equal(clipView.formatBytes(3 * 1024 ** 3), "3 GB");
+  for (const invalid of [undefined, null, -1, NaN, Infinity]) assert.equal(clipView.formatBytes(invalid), "");
+  const text = clipboard.textClip("微信复制");
+  assert.equal(clipView.clipByteSize(text), 12);
+  const image = { ...text, kind: "image", byteSize: 1536, width: 500, height: 300 };
+  assert.equal(clipView.clipByteSize(clipboard.validateClips([image])[0]), 1536);
+  assert.equal(clipboard.validateClips([{ ...image, byteSize: Infinity }])[0].byteSize, undefined);
+  const files = { ...text, kind: "file", files: ["/a.txt", "/b.txt"] };
+  const info = new Map([["/a.txt", { path: "/a.txt", byteSize: 1024 }], ["/b.txt", { path: "/b.txt", byteSize: 0 }]]);
+  assert.equal(clipView.clipByteSize(files, info), 1024);
+  info.delete("/b.txt");
+  assert.equal(clipView.clipByteSize(files, info), undefined);
+  for (const byteSize of [null, -1, NaN, Infinity]) {
+    info.set("/b.txt", { path: "/b.txt", byteSize });
+    assert.equal(clipView.clipByteSize(files, info), undefined);
+  }
+  assert.equal(clipView.clipByteSize({ ...files, files: [] }, info), undefined);
+});
+
+test("liquid refraction keeps the centre neutral and bends opposite edges symmetrically", () => {
+  assert.deepEqual(glass.refractionPixel(460, 300, 920, 600, 24), [128, 128, 128, 255]);
+  const left = glass.refractionPixel(1, 300, 920, 600, 24);
+  const right = glass.refractionPixel(919, 300, 920, 600, 24);
+  assert.ok(left[0] < 128 && right[0] > 128);
+  assert.equal(left[0] + right[0], 256);
+  assert.equal(left[1], 128);
+  for (const [x, y] of [[0, 0], [1, 1], [20, 20], [460, 599]]) {
+    assert.ok(glass.refractionPixel(x, y, 920, 600, 24).every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255));
+  }
+});
 
 test("clipboard window edits preserve new captures and concurrent unrelated metadata", () => {
   const a = clipboard.textClip("First entry");

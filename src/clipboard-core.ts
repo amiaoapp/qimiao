@@ -30,6 +30,7 @@ export type Clip = {
   thumbnail?: string;
   width?: number;
   height?: number;
+  byteSize?: number;
 };
 export type ClipOptions = {
   retentionDays: number;
@@ -258,6 +259,7 @@ export function validateClips(value: unknown): Clip[] {
         html: str(c.html, 1000000),
         width: num(c.width),
         height: num(c.height),
+        byteSize: num(c.byteSize),
       }),
     );
 }

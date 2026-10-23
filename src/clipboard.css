@@ -65,6 +65,8 @@
   width: 30px;
   height: 30px;
   flex: none;
+  padding: 0;
+  line-height: 1;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -187,7 +189,9 @@
   line-height: 1.5;
 }
 .clip-entry-copy small {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
@@ -195,6 +199,13 @@
   text-overflow: ellipsis;
   overflow: hidden;
 }
+.clip-entry-source { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.clip-entry-size { flex:none; font-variant-numeric:tabular-nums; }
+.clip-file-preview > button { width:100%; height:auto; min-height:56px; padding:10px 12px; text-align:left; }
+.clip-file-preview > button > svg { flex:none; }
+.clip-file-preview > button > span { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
+.clip-file-preview strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.clip-file-preview small { color:var(--muted); font-size:11px; }
 .clip-entry-flags {
   display: flex;
   flex-direction: column;

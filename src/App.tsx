@@ -95,6 +95,7 @@ import { isFolderEntry, mergeAppFolders, renameAppFolder, leaveAppFolder } from 
 import { recordedHotkey, hotkeyLabel } from "./hotkeys";
 import {launchWithImmediateHide,type CommonCommand,type RecentCommand} from "./compact-results";
 import WindowResizeHandles from "./WindowResizeHandles";
+import LiquidGlassSurface from "./LiquidGlassSurface";
 import { useClipboardHost } from "./useClipboardBridge";
 
 const load = <T,>(key: string, fallback: T): T => {
@@ -885,6 +886,7 @@ export default function App() {
       <div className="window-drag-region" title={settings.language === "en" ? "Drag to move window" : "拖动可移动窗口"}><span /></div>
       <WindowResizeHandles />
       <section className="launcher-shell">
+        <LiquidGlassSurface enabled={settings.material === "liquid"} radius={isWindows ? 24 : 26} />
         <div className="content">
           {availableUpdate && (
             <UpdateBanner
@@ -1450,32 +1452,38 @@ function Header({
           <button
             className={mode === "apps" ? "active" : ""}
             onClick={() => chooseMode("apps")}
+            title={en ? "Apps" : "应用"}
+            aria-label={en ? "Apps" : "应用"}
+            aria-pressed={mode === "apps"}
           >
             <AppWindow />
-            {en ? "Apps" : "应用"}
           </button>
           <button
             className={mode === "commands" ? "active" : ""}
             onClick={() => chooseMode("commands")}
             title={en ? "Commands" : "命令"}
+            aria-label={en ? "Commands" : "命令"}
+            aria-pressed={mode === "commands"}
           >
             <CommandIcon />
-            {en ? "Commands" : "命令"}
           </button>
           <button
             className={mode === "clipboard" ? "active" : ""}
             onClick={() => chooseMode("clipboard")}
             title={en ? "Clipboard" : "剪贴板"}
+            aria-label={en ? "Clipboard" : "剪贴板"}
+            aria-pressed={mode === "clipboard"}
           >
             <ClipboardList />
-            {en ? "Clipboard" : "剪贴板"}
           </button>
           <button
             className={mode === "ai" ? "active" : ""}
             onClick={() => chooseMode("ai")}
+            title="AI"
+            aria-label="AI"
+            aria-pressed={mode === "ai"}
           >
             <Brain />
-            AI
           </button>
         </div>
         <span className="toolbar-divider" aria-hidden="true" />

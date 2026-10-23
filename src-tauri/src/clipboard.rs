@@ -316,6 +316,7 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
             fs::write(&path, png.get_bytes()).map_err(|error| error.to_string())?;
         }
         value["imageKey"] = json!(key);
+        value["byteSize"] = json!(png.get_bytes().len());
         value["width"] = json!(width);
         value["height"] = json!(height);
         if let Ok(thumbnail) = image.thumbnail(320, 200).and_then(|image| image.to_png()) {
@@ -364,6 +365,27 @@ pub async fn clipboard_snapshot(
         .await
         .map_err(|_| "剪贴板读取任务失败")?
 }
+
+fn file_info(path: &str) -> Value {
+    let metadata = fs::metadata(path).ok();
+    json!({
+        "path": path,
+        "byteSize": metadata.as_ref().filter(|entry| entry.is_file()).map(|entry| entry.len()),
+        "isDirectory": metadata.as_ref().map(|entry| entry.is_dir()),
+    })
+}
+
+#[tauri::command]
+pub async fn clipboard_file_info(paths: Vec<String>) -> Result<Vec<Value>, String> {
+    if paths.len() > 128 || paths.iter().any(|path| path.len() > 4096 || !std::path::Path::new(path).is_absolute()) {
+        return Err("文件信息请求超出限制或路径无效".into());
+    }
+    // File metadata (including network drives) must never hold the clipboard lock.
+    tauri::async_runtime::spawn_blocking(move || paths.iter().map(|path| file_info(path)).collect())
+        .await
+        .map_err(|_| "读取文件信息失败".into())
+}
+
 #[tauri::command]
 pub async fn load_clipboard_history(app: tauri::AppHandle) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -378,8 +400,18 @@ pub async fn load_clipboard_history(app: tauri::AppHandle) -> Result<Value, Stri
         {
             return Err("剪贴板数据库超过安全大小限制".into());
         }
-        serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
-            .map_err(|_| "剪贴板数据库无法读取".into())
+        let mut entries: Value = serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
+            .map_err(|_| "剪贴板数据库无法读取".to_string())?;
+        if let Some(items) = entries.as_array_mut() {
+            for item in items.iter_mut().filter(|item| item["kind"] == "image" && item["byteSize"].is_null()) {
+                if let Some(metadata) = item["imageKey"].as_str()
+                    .and_then(|key| image_path(&app, key).ok())
+                    .and_then(|path| fs::metadata(path).ok()) {
+                    item["byteSize"] = json!(metadata.len());
+                }
+            }
+        }
+        Ok(entries)
     })
     .await
     .map_err(|_| "读取任务失败")?
@@ -575,7 +607,23 @@ pub async fn export_clipboard_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_text_buffer, html_text};
+    use super::{decode_text_buffer, html_text, file_info};
+
+    #[test]
+    fn file_sizes_distinguish_empty_files_directories_and_missing_paths() {
+        let root = std::env::temp_dir().join(format!("qimiao-file-info-{}-{}", std::process::id(), super::millis()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("sample.txt");
+        std::fs::write(&file, "微信复制").unwrap();
+        assert_eq!(file_info(file.to_str().unwrap())["byteSize"], "微信复制".len());
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(file_info(file.to_str().unwrap())["byteSize"], 0);
+        assert_eq!(file_info(root.to_str().unwrap())["isDirectory"], true);
+        assert!(file_info(root.to_str().unwrap())["byteSize"].is_null());
+        assert!(file_info(root.join("missing").to_str().unwrap())["byteSize"].is_null());
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn decodes_utf8_and_utf16_clipboard_payloads() {

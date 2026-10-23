@@ -53,3 +53,16 @@
   .clipboard-stage .clipboard-window-shell { padding: 10px; gap: 7px; }
   .clipboard-stage .modal-shade { padding: 12px; }
 }
+@media (max-height: 380px) {
+  .clipboard-stage .clipboard-window-shell { padding: 8px; gap: 4px; }
+  .clipboard-stage .clipboard-window-header { height: 28px; min-height: 28px; }
+  .clipboard-stage .clipboard-window-search { height: 34px; min-height: 34px; }
+  .clipboard-stage .clip-icon-button { width: 28px; height: 28px; }
+  .clipboard-stage .clip-toolbar { min-height: 34px; padding: 3px 8px; }
+  .clipboard-stage .clip-sidebar { padding: 2px 8px; }
+  .clipboard-stage .clip-sidebar button { height: 28px; min-height: 28px; padding-block: 4px; }
+  .clipboard-stage .clip-sidebar select { height: 28px; padding-block: 3px; }
+  .clipboard-stage .clip-notice { font-size: 10px; padding: 4px 8px; line-height: 1.4; }
+  .clipboard-stage .clip-paste-bar { padding: 5px 8px; }
+  .clipboard-stage .clip-paste-bar button { height: 30px; }
+}

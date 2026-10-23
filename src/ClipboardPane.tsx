@@ -47,8 +47,8 @@ import {
   type Clip,
   type ClipKind,
 } from "./clipboard-core";
-import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText, openMacosPermission, clipboardPasteStatus } from "./tauri";
-import { clipboardCategory, clipRelativeTime, clipLink } from "./clipboard-view";
+import { copyClip, exportClip, syncDavImage, openExternalUrl, openPath, setClipboardText, openMacosPermission, clipboardPasteStatus, clipboardFileInfo } from "./tauri";
+import { clipboardCategory, clipRelativeTime, clipLink, clipByteSize, formatBytes, type ClipboardFileInfo } from "./clipboard-view";
 import type { Settings } from "./types";
 import "./clipboard.css";
 
@@ -158,6 +158,19 @@ export default function ClipboardPane({
     [active, filter, query],
   );
   const item = visible.find((c) => c.id === selected) ?? visible[0];
+  const [fileInfo, setFileInfo] = useState(() => new Map<string, ClipboardFileInfo>());
+  const fileRequests = useRef(new Set<string>());
+  useEffect(() => {
+    const paths = [...new Set([...(item?.files ?? []), ...visible.slice(0, 80).flatMap((clip) => clip.files ?? [])])]
+      .filter((path) => !fileRequests.current.has(path)).slice(0, 128);
+    if (!paths.length) return;
+    paths.forEach((path) => fileRequests.current.add(path));
+    void clipboardFileInfo(paths).then((entries) => {
+      setFileInfo((current) => new Map([...current, ...entries.map((entry) => [entry.path, entry] as const)]));
+    }).catch(() => {
+      paths.forEach((path) => fileRequests.current.delete(path));
+    });
+  }, [item, visible, fileInfo]);
   const contextItem = active.find((c) => c.id === context?.id);
   const link = item?.kind === "link" ? clipLink(item.text) : null;
   useEffect(() => { setContext(null); }, [filter, query]);
@@ -570,7 +583,9 @@ export default function ClipboardPane({
               </div>
             ) : visible.length ? (
               visible.slice(0, 400).map((c, index) => {
-                const Icon = icons[c.kind];
+                const category = clipboardCategory(c);
+                const Icon = c.kind === "file" ? category === "archive" ? Archive : category === "application" ? AppWindow : c.files?.length === 1 && fileInfo.get(c.files[0])?.isDirectory ? Folder : File : icons[c.kind];
+                const byteSize = formatBytes(clipByteSize(c, fileInfo));
                 return (
                   <button
                     key={c.id}
@@ -607,9 +622,12 @@ export default function ClipboardPane({
                                 : c.text.slice(0, 120))}
                       </strong>
                       <small>
+                        <span className="clip-entry-source">
                         {c.sourceApp || clipKindLabels[c.kind][en ? 1 : 0]} ·{" "}
                         {clipRelativeTime(c.createdAt, en)}{" "}
                         {c.group ? `· ${c.group}` : ""}
+                        </span>
+                        {(c.kind === "image" || c.kind === "file") && byteSize ? <span className="clip-entry-size">{byteSize}</span> : null}
                       </small>
                     </span>
                     <span className="clip-entry-flags">
@@ -720,7 +738,11 @@ export default function ClipboardPane({
                       <pre>{item.text}</pre>
                     </>
                   ) : item.kind === "file" ? (
-                    <div className="clip-file-preview">{item.files?.map((path) => <button className="secondary" key={path} title={path} onClick={() => void openPath(path).catch((error) => showToast(String(error)))}><File size={18}/><span>{path.split(/[\\/]/).pop()}</span><ExternalLink size={14}/></button>)}</div>
+                    <div className="clip-file-preview">{item.files?.map((path) => {
+                      const info = fileInfo.get(path);
+                      const FileIcon = info?.isDirectory ? Folder : clipboardCategory({ ...item, files: [path] }) === "archive" ? Archive : File;
+                      return <button className="secondary" key={path} title={path} onClick={() => void openPath(path).catch((error) => showToast(String(error)))}><FileIcon size={20}/><span><strong>{path.split(/[\\/]/).pop()}</strong><small>{info?.isDirectory ? (en ? "Folder" : "文件夹") : formatBytes(info?.byteSize) || (en ? "Size unavailable" : "大小暂不可用")}</small></span><ExternalLink size={14}/></button>;
+                    })}</div>
                   ) : link ? (
                     <div className="clip-link-preview">
                       <span className="clip-link-protocol"><Link size={20}/>{link.hostname}<small>{link.protocol.slice(0, -1).toUpperCase()}</small></span>
@@ -744,10 +766,10 @@ export default function ClipboardPane({
                   <dd>{new Date(item.createdAt).toLocaleString()}</dd>
                   <dt>{en ? "Size" : "大小"}</dt>
                   <dd>
-                    {item.kind === "image"
-                      ? `${item.width} × ${item.height}`
-                      : `${item.text.length} ${en ? "characters" : "字符"}`}
+                    {formatBytes(clipByteSize(item, fileInfo)) || (en ? "Unavailable" : "暂不可用")}
+                    {item.kind !== "file" && item.kind !== "image" ? ` · ${item.text.length} ${en ? "characters" : "字符"}` : ""}
                   </dd>
+                  {item.kind === "image" && item.width && item.height ? <><dt>{en ? "Dimensions" : "尺寸"}</dt><dd>{item.width} × {item.height} px</dd></> : null}
                 </dl>
                 <div className="clip-actions clip-legacy-actions">
                   <button

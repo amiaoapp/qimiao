@@ -33,12 +33,10 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .launcher-shell:before,.launcher-shell:after { content:none!important; display:none!important; }
 :root[data-material=solid] .launcher-shell { background:#f1f3f6!important; }
 :root[data-material=glass] .launcher-shell { background:rgba(244,246,249,.83)!important; backdrop-filter:blur(32px) saturate(112%)!important; -webkit-backdrop-filter:blur(32px) saturate(112%)!important; }
-:root[data-material=liquid] .launcher-shell { background:rgba(246,248,251,.38)!important; backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
 :root[data-appearance=dark][data-material=solid] .launcher-shell { background:#252830!important; }
 :root[data-appearance=dark][data-material=glass] .launcher-shell { background:rgba(34,37,44,.9)!important; }
-:root[data-appearance=dark][data-material=liquid] .launcher-shell { background:rgba(27,30,37,.64)!important; }
-:root[data-platform=windows][data-material=glass] .launcher-shell,:root[data-platform=windows][data-material=liquid] .launcher-shell { background:rgba(243,245,248,.96)!important; }
-:root[data-platform=windows][data-appearance=dark][data-material=glass] .launcher-shell,:root[data-platform=windows][data-appearance=dark][data-material=liquid] .launcher-shell { background:rgba(37,40,48,.97)!important; }
+:root[data-platform=windows][data-material=glass] .launcher-shell { background:rgba(243,245,248,.96)!important; }
+:root[data-platform=windows][data-appearance=dark][data-material=glass] .launcher-shell { background:rgba(37,40,48,.97)!important; }
 
 /* Search, and the grouped command rail. */
 .launchpad-header { height:52px; min-height:52px; gap:14px; margin-bottom:20px; }
@@ -51,7 +49,12 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .search-wrap button:hover { background:var(--hover); }
 .search-mode-label { padding:3px 6px; flex:none; font-size:9px; font-weight:500; color:var(--muted); border-radius:5px; border:1px solid var(--line); }
 :root[data-appearance] .launchpad-header .header-actions { gap:2px; padding:4px; border:1px solid var(--control-edge)!important; border-radius:15px; background:var(--control-surface)!important; box-shadow:inset 0 1px 0 var(--shine)!important; }
-.launchpad-header .mode-switch { gap:2px; }
+.launchpad-header .mode-switch { gap:2px; padding:0; border:0; background:none; align-items:center; }
+:root[data-appearance] .launchpad-header .mode-switch button,
+:root[data-appearance] .launchpad-header .icon-btn,
+:root[data-appearance] .library-controls .view-switch button { display:grid; place-items:center; padding:0!important; gap:0; flex:none; line-height:1; }
+.launchpad-header .header-actions svg,.view-switch svg,.clip-icon-button svg { display:block; flex:none; margin:0; }
+.view-switch svg { width:15px; height:15px; }
 :root[data-appearance] .launchpad-header .mode-switch button,:root[data-appearance] .launchpad-header .icon-btn { width:31px!important; height:34px!important; border-radius:10px; color:var(--muted)!important; transition:transform .22s var(--ease-spring),color .16s; box-shadow:none; }
 .launchpad-header .header-actions svg { stroke-width:1.75; }
 :root[data-appearance] .launchpad-header .mode-switch button.active { color:var(--text)!important; background:var(--selection)!important; box-shadow:0 1px 4px rgba(30,40,55,.1),inset 0 1px 0 var(--shine); }
@@ -78,7 +81,7 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 :root[data-appearance] .library-controls .sort-control select { min-width:103px; height:28px!important; padding:0 19px 0 27px!important; border:0!important; border-radius:9px!important; background:transparent!important; background-image:none!important; box-shadow:none!important; color:var(--muted)!important; font-weight:500!important; font-size:10px!important; cursor:pointer; }
 .sort-control:hover { background:var(--hover); }
 .sort-control:focus-within { border-color:var(--accent); }
-:root[data-appearance] .library-controls .view-switch { height:28px!important; padding:2px!important; border-radius:9px!important; background:var(--control-surface)!important; border:1px solid var(--control-edge)!important; }
+:root[data-appearance] .library-controls .view-switch { height:28px!important; padding:2px!important; align-items:center; gap:2px; border-radius:9px!important; background:var(--control-surface)!important; border:1px solid var(--control-edge)!important; }
 :root[data-appearance] .library-controls .view-switch button { width:27px!important; height:22px!important; border-radius:6px; color:var(--muted)!important; }
 :root[data-appearance] .library-controls .view-switch button.active { background:var(--selection)!important; color:var(--text)!important; box-shadow:0 1px 3px rgba(30,40,55,.09); }
 .library-controls select option { background:var(--panel); color:var(--text); }

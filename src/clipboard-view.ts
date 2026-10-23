@@ -1,5 +1,24 @@
 import type { Clip } from "./clipboard-core";
 
+export type ClipboardFileInfo = { path: string; byteSize?: number | null; isDirectory?: boolean | null };
+
+export function formatBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unit = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
+  return `${Number((bytes / 1024 ** unit).toFixed(unit ? 1 : 0))} ${units[unit]}`;
+}
+
+export function clipByteSize(clip: Clip, files: ReadonlyMap<string, ClipboardFileInfo> = new Map()): number | undefined {
+  if (clip.kind === "file") {
+    const sizes = (clip.files ?? []).map((path) => files.get(path)?.byteSize);
+    return sizes.length && sizes.every((size): size is number => typeof size === "number" && Number.isFinite(size) && size >= 0)
+      ? sizes.reduce<number>((total, size) => total + size, 0)
+      : undefined;
+  }
+  return clip.kind === "image" ? clip.byteSize : new TextEncoder().encode(clip.text).byteLength;
+}
+
 export function clipboardCategory(clip: Clip): string {
   if (clip.kind !== "file") return clip.kind;
   const extensions = (clip.files ?? []).map((path) => path.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase());
