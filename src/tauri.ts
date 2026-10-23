@@ -2,6 +2,7 @@ import type { AppItem } from "./types";
 import type { Clip } from "./clipboard-core";
 import type { DavOptions } from "./types";
 import type { ClipboardFileInfo } from "./clipboard-view";
+import type { ClipboardCaptureBatch } from "./clipboard-capture";
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 async function desktopInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -9,6 +10,13 @@ async function desktopInvoke<T>(command: string, args?: Record<string, unknown>)
 }
 export async function clipboardSnapshot(ignoredApps: string[]): Promise<Clip | null> {
   return isTauri() ? desktopInvoke("clipboard_snapshot", { ignoredApps }) : null;
+}
+export async function configureClipboardCapture(enabled: boolean, ignoredApps: string[]): Promise<void> {
+  if (isTauri()) await desktopInvoke("configure_clipboard_capture", { enabled, ignoredApps });
+}
+export async function clipboardCaptureBatch(acknowledged: number): Promise<ClipboardCaptureBatch> {
+  return isTauri() ? desktopInvoke("clipboard_capture_batch", { acknowledged })
+    : { cursor: acknowledged, entries: [], error: null, notice: null, dropped: 0 };
 }
 export async function clipboardFileInfo(paths: string[]): Promise<ClipboardFileInfo[]> {
   return isTauri() ? desktopInvoke("clipboard_file_info", { paths }) : paths.map((path) => ({ path }));

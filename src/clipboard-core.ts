@@ -207,7 +207,7 @@ export function validateClips(value: unknown): Clip[] {
         c.id.length > 0 &&
         c.id.length < 160 &&
         typeof c.text === "string" &&
-        c.text.length <= 250000 &&
+        c.text.length <= 1000000 &&
         num(c.updatedAt) !== undefined &&
         num(c.createdAt) !== undefined,
     )

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { APP_VERSION } from "./app-version";
 import {
   Search,
   Sparkles,
@@ -195,7 +196,6 @@ const persistApps = (apps: AppItem[]) =>
         : app.icon || `app:${app.path}`,
     })),
   );
-const APP_VERSION = "1.1.3";
 const appIconUrl = new URL("../src-tauri/icons/128x128.png", import.meta.url)
   .href;
 export default function App() {

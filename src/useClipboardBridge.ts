@@ -7,17 +7,17 @@ import type { useClipboardHistory } from "./useClipboardHistory";
 import { clipboardEdits } from "./clipboard-window-state";
 
 type History = ReturnType<typeof useClipboardHistory>;
-type ClipboardState = Pick<History, "clips" | "paused" | "error" | "ready"> & { settings: Settings };
+type ClipboardState = Pick<History, "clips" | "paused" | "error" | "notice" | "ready"> & { settings: Settings };
 type ClipboardEdit = { clips?: Clip[]; deleted?: string[]; paused?: boolean; settings?: Partial<Settings> };
 const desktop = () => "__TAURI_INTERNALS__" in window;
 
-/** The launcher remains the only capture, sync and disk-write owner. */
+/** The launcher owns history, sync and disk writes; native code captures independently. */
 export function useClipboardHost(settings: Settings, history: History, update: (p: Partial<Settings>) => void) {
   const latest = useRef({ settings, history, update });
   latest.current = { settings, history, update };
   const publish = () => {
     const { settings, history } = latest.current;
-    return emitTo("clipboard", "clipboard-state", { settings, clips: history.clips, paused: history.paused, error: history.error, ready: history.ready });
+    return emitTo("clipboard", "clipboard-state", { settings, clips: history.clips, paused: history.paused, error: history.error, notice: history.notice, ready: history.ready });
   };
   useEffect(() => {
     if (!desktop()) return;
@@ -54,11 +54,11 @@ export function useClipboardHost(settings: Settings, history: History, update: (
   }, []);
   useEffect(() => {
     if (desktop()) void publish().catch(console.warn);
-  }, [settings, history.clips, history.paused, history.error, history.ready]);
+  }, [settings, history.clips, history.paused, history.error, history.notice, history.ready]);
 }
 
 export function useClipboardClient(initialSettings: Settings, showError: (s: string) => void) {
-  const [state, setState] = useState<ClipboardState>({ settings: initialSettings, clips: [], paused: false, error: "", ready: false });
+  const [state, setState] = useState<ClipboardState>({ settings: initialSettings, clips: [], paused: false, error: "", notice: "", ready: false });
   const latest = useRef(state);
   latest.current = state;
   useEffect(() => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 
 async function importBundled(path) {
@@ -10,6 +11,8 @@ const catalog = await importBundled("src/app-catalog.ts");
 const actions = await importBundled("src/system-actions.ts");
 const appearance = await importBundled("src/appearance.ts");
 const clipboard = await importBundled("src/clipboard-core.ts");
+const capture = await importBundled("src/clipboard-capture.ts");
+const appVersion = await importBundled("src/app-version.ts");
 const layout = await importBundled("src/app-layout.ts");
 const sync = await importBundled("src/sync-core.ts");
 const compact = await importBundled("src/compact-results.ts");
@@ -20,6 +23,49 @@ const folders = await importBundled("src/app-folders.ts");
 const hotkeys = await importBundled("src/hotkeys.ts");
 const clipWindow = await importBundled("src/clipboard-window-state.ts");
 const app = (name, extra = {}) => ({ id: name, name, path: `/Applications/${name}.app`, launchCount: 0, favorite: false, ...extra });
+
+test("displayed and update-check version comes from release metadata", () => {
+  const packageInfo = JSON.parse(readFileSync("package.json", "utf8"));
+  const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  const tauri = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
+  const cargoVersion = readFileSync("src-tauri/Cargo.toml", "utf8").match(/^version = "([^"]+)"/m)?.[1];
+  assert.equal(appVersion.APP_VERSION, packageInfo.version);
+  for (const version of [lock.version, lock.packages[""].version, tauri.version, cargoVersion]) {
+    assert.equal(version, appVersion.APP_VERSION);
+  }
+});
+
+test("queued clipboard copies survive delayed delivery, repeat copies and long text", () => {
+  const options = { ...clipboard.defaultClipOptions, retentionDays: 0 };
+  const now = Date.now();
+  const text = { ...clipboard.textClip("Chrome copied text", now), id: "text", files: [] };
+  const image = { ...clipboard.textClip("", now + 1), kind: "image", id: "image", imageKey: "a".repeat(64), files: [] };
+  const longText = { ...clipboard.textClip("这是一段比较长的复制内容。".repeat(23000), now + 2), id: "long", files: [] };
+  const first = capture.acceptClipboardBatch([], [text, image, longText], options);
+  assert.equal(first.skipped, undefined);
+  assert.equal(first.clips.length, 3);
+  assert.equal(first.clips.find((clip) => clip.id === "long").text, longText.text);
+  const edited = first.clips.map((clip) => clip.id === "text" ? { ...clip, pinned: true, group: "工作" } : clip);
+  const copiedAgain = { ...text, createdAt: now + 5000, updatedAt: now + 5000 };
+  const repeated = capture.acceptClipboardBatch(edited, [copiedAgain], options);
+  assert.equal(repeated.clips.length, 3);
+  assert.equal(repeated.clips.find((clip) => clip.id === "text").lastUsedAt, now + 5000);
+  assert.equal(repeated.clips.find((clip) => clip.id === "text").pinned, true);
+  assert.equal(repeated.clips.find((clip) => clip.id === "text").group, "工作");
+});
+
+test("clipboard privacy exclusions report why an entry was skipped and do not block later copies", () => {
+  const now = Date.now();
+  const make = (text, extra = {}) => ({ ...clipboard.textClip(text, now), ...extra });
+  const options = { ...clipboard.defaultClipOptions, retentionDays: 0 };
+  assert.equal(capture.acceptClipboardBatch([], [make("password=secret")], options).skipped, "sensitive");
+  assert.equal(capture.acceptClipboardBatch([], [make("text", { sourceApp: "Bitwarden" })], options).skipped, "ignored");
+  assert.equal(capture.acceptClipboardBatch([], [make("text", { createdAt: undefined })], options).skipped, "invalid");
+  const result = capture.acceptClipboardBatch([], [make("password=secret"), make("QQ 复制的正常文本")], options);
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(result.clips.map((clip) => clip.text), ["QQ 复制的正常文本"]);
+  assert.equal(capture.acceptClipboardBatch([], [make("password=secret")], { ...options, skipSensitive: false }).clips.length, 1);
+});
 
 test("clipboard byte sizes preserve original image bytes and do not invent missing file sizes", () => {
   assert.equal(clipView.formatBytes(0), "0 B");

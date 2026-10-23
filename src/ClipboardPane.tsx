@@ -71,6 +71,7 @@ export default function ClipboardPane({
   paused,
   setPaused,
   error,
+  notice = "",
   ready,
   showToast,
   imeActive,
@@ -83,6 +84,7 @@ export default function ClipboardPane({
   paused: boolean;
   setPaused: (p: boolean) => void;
   error: string;
+  notice?: string;
   ready: boolean;
   showToast: (s: string) => void;
   imeActive: () => boolean;
@@ -412,6 +414,9 @@ export default function ClipboardPane({
         <div className="clip-notice" role="alert">
           {error}
         </div>
+      )}
+      {notice && !error && settings.clipboardHistoryEnabled && !paused && (
+        <div className="clip-notice" role="status">{notice}</div>
       )}
       {preferences ? (
         <div className="clip-preferences">

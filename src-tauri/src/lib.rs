@@ -3217,6 +3217,8 @@ pub fn run() {
             tool_windows::start_tool_resize,
             fonts::list_local_fonts,
             clipboard::clipboard_snapshot,
+            clipboard::configure_clipboard_capture,
+            clipboard::clipboard_capture_batch,
             clipboard::clipboard_file_info,
             clipboard::load_clipboard_history,
             clipboard::save_clipboard_history,

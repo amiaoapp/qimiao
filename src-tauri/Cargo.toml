@@ -1,6 +1,6 @@
 [package]
 name = "qimiao-launcher"
-version = "1.1.4"
+version = "1.1.5"
 description = "APP喵旗下的智能跨平台启动器"
 authors = ["APP喵"]
 edition = "2021"

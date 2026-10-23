@@ -5,12 +5,15 @@ use clipboard_rs::{
     common::{RustImage, RustImageData},
     Clipboard, ClipboardContent, ClipboardContext,
 };
+#[cfg(not(target_os = "macos"))]
+use clipboard_rs::ContentFormat;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::VecDeque,
     fs,
     path::PathBuf,
-    sync::Mutex,
+    sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
@@ -20,6 +23,216 @@ pub struct ClipboardRuntime {
     sequence: Mutex<Option<u64>>,
     fingerprint: Mutex<String>,
     io: Mutex<()>,
+    capture_started: AtomicBool,
+    capture: Mutex<CaptureBuffer>,
+    image_bytes: AtomicUsize,
+}
+
+enum CaptureOutcome {
+    Unchanged,
+    Skipped(&'static str),
+    Entry(CapturedCopy),
+}
+
+enum CapturedImage {
+    #[cfg(target_os = "macos")]
+    Encoded(Vec<u8>),
+    #[cfg(not(target_os = "macos"))]
+    Decoded(RustImageData),
+}
+
+struct CapturedCopy {
+    value: Value,
+    image: Option<CapturedImage>,
+    image_bytes: usize,
+}
+
+struct ImageJob {
+    revision: u64,
+    copy: CapturedCopy,
+}
+
+struct PendingCapture {
+    cursor: u64,
+    entry: Value,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct CaptureBuffer {
+    enabled: bool,
+    ignored_apps: Vec<String>,
+    revision: u64,
+    cursor: u64,
+    delivered: u64,
+    pending: VecDeque<PendingCapture>,
+    bytes: usize,
+    dropped: u64,
+    error: Option<String>,
+    notice: Option<&'static str>,
+}
+
+impl CaptureBuffer {
+    fn configure(&mut self, enabled: bool, ignored_apps: Vec<String>) -> bool {
+        let resumed = enabled && !self.enabled;
+        if self.enabled != enabled || self.ignored_apps != ignored_apps {
+            self.revision += 1;
+        }
+        self.enabled = enabled;
+        self.ignored_apps = ignored_apps;
+        if !enabled {
+            self.pending.clear();
+            self.bytes = 0;
+            self.dropped = 0;
+            self.error = None;
+            self.notice = None;
+        }
+        resumed
+    }
+
+    fn push(&mut self, entry: Value) {
+        let bytes = entry.to_string().len();
+        self.cursor += 1;
+        self.bytes += bytes;
+        self.pending.push_back(PendingCapture { cursor: self.cursor, entry, bytes });
+        // Keep copies while the WebView is hidden or suspended, with a bounded
+        // memory budget. Overflow is reported rather than silently dropping data.
+        while self.pending.len() > 512 || self.bytes > 24 * 1024 * 1024 {
+            if let Some(old) = self.pending.pop_front() {
+                self.bytes -= old.bytes;
+                self.dropped += 1;
+            }
+        }
+        self.error = None;
+        self.notice = None;
+    }
+
+    fn batch(&mut self, acknowledged: u64) -> Value {
+        let acknowledged = acknowledged.min(self.delivered);
+        while self.pending.front().is_some_and(|entry| entry.cursor <= acknowledged) {
+            self.bytes -= self.pending.pop_front().unwrap().bytes;
+        }
+        let mut bytes = 0;
+        let entries: Vec<_> = self.pending.iter().take(32).take_while(|entry| {
+            if bytes > 0 && bytes + entry.bytes > 4 * 1024 * 1024 { return false; }
+            bytes += entry.bytes;
+            true
+        }).collect();
+        let cursor = entries.last().map_or(acknowledged, |entry| entry.cursor);
+        self.delivered = self.delivered.max(cursor);
+        json!({
+            "cursor": cursor,
+            "entries": entries.iter().map(|entry| &entry.entry).collect::<Vec<_>>(),
+            "error": self.error,
+            "notice": self.notice,
+            "dropped": self.dropped,
+        })
+    }
+}
+
+#[tauri::command]
+pub fn configure_clipboard_capture(
+    app: tauri::AppHandle,
+    enabled: bool,
+    ignored_apps: Vec<String>,
+) -> Result<(), String> {
+    if ignored_apps.len() > 100 || ignored_apps.iter().any(|name| name.len() > 1024) {
+        return Err("剪贴板排除规则超出限制".into());
+    }
+    let state = app.state::<ClipboardRuntime>();
+    let resumed = state.capture.lock().map_err(|_| "剪贴板状态不可用")?
+        .configure(enabled, ignored_apps);
+    if resumed {
+        *state.sequence.lock().map_err(|_| "剪贴板状态不可用")? = None;
+        state.fingerprint.lock().map_err(|_| "剪贴板状态不可用")?.clear();
+    }
+    if enabled && !state.capture_started.swap(true, Ordering::SeqCst) {
+        let (send_image, image_jobs) = mpsc::sync_channel::<ImageJob>(8);
+        let image_app = app.clone();
+        if let Err(error) = std::thread::Builder::new().name("qimiao-clipboard-images".into()).spawn(move || {
+            for job in image_jobs {
+                let state = image_app.state::<ClipboardRuntime>();
+                let bytes = job.copy.image_bytes;
+                let active = state.capture.lock().ok().is_some_and(|capture| capture.enabled && capture.revision == job.revision);
+                if active {
+                    let result = finish_copy(&image_app, job.copy);
+                    if let Ok(mut capture) = state.capture.lock() {
+                        if capture.enabled && capture.revision == job.revision {
+                            match result {
+                                Ok(entry) => capture.push(entry),
+                                Err(error) => capture.error = Some(error),
+                            }
+                        }
+                    }
+                    let _ = image_app.emit_to("main", "clipboard-capture-ready", ());
+                }
+                state.image_bytes.fetch_sub(bytes, Ordering::SeqCst);
+            }
+        }) {
+            state.capture_started.store(false, Ordering::SeqCst);
+            return Err(format!("无法启动剪贴板图片处理：{error}"));
+        }
+        let collector_app = app.clone();
+        if let Err(error) = std::thread::Builder::new().name("qimiao-clipboard".into()).spawn(move || loop {
+            let state = collector_app.state::<ClipboardRuntime>();
+            let config = state.capture.lock().ok().and_then(|capture| capture.enabled
+                .then(|| (capture.revision, capture.ignored_apps.clone())));
+            if let Some((revision, ignored)) = config {
+                let result = snapshot(&collector_app, &ignored);
+                let mut notify = false;
+                if let Ok(mut capture) = state.capture.lock() {
+                    if capture.enabled && capture.revision == revision {
+                        match result {
+                            Ok(CaptureOutcome::Entry(copy)) => {
+                                if copy.image.is_some() {
+                                    let bytes = copy.image_bytes;
+                                    let reserved = state.image_bytes.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
+                                        |current| current.checked_add(bytes).filter(|total| *total <= 128 * 1024 * 1024)).is_ok();
+                                    if !reserved {
+                                        capture.dropped += 1;
+                                        notify = true;
+                                    } else if send_image.try_send(ImageJob { revision, copy }).is_err() {
+                                        state.image_bytes.fetch_sub(bytes, Ordering::SeqCst);
+                                        capture.dropped += 1;
+                                        notify = true;
+                                    }
+                                } else {
+                                    capture.push(copy.value);
+                                    notify = true;
+                                }
+                            }
+                            Ok(CaptureOutcome::Skipped(notice)) => {
+                                notify = capture.notice != Some(notice) || capture.error.is_some();
+                                capture.notice = Some(notice);
+                                capture.error = None;
+                            }
+                            Ok(CaptureOutcome::Unchanged) => {},
+                            Err(error) => {
+                                notify = capture.error.as_ref() != Some(&error);
+                                capture.error = Some(error);
+                            }
+                        }
+                    } else if capture.enabled {
+                        // Configuration changed during a lazy clipboard read;
+                        // retry instead of losing the now-discarded revision.
+                        if let Ok(mut sequence) = state.sequence.lock() { *sequence = None; }
+                    }
+                }
+                if notify { let _ = collector_app.emit_to("main", "clipboard-capture-ready", ()); }
+            }
+            std::thread::sleep(Duration::from_millis(75));
+        }) {
+            state.capture_started.store(false, Ordering::SeqCst);
+            return Err(format!("无法启动剪贴板后台记录：{error}"));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clipboard_capture_batch(app: tauri::AppHandle, acknowledged: u64) -> Result<Value, String> {
+    Ok(app.state::<ClipboardRuntime>().capture.lock().map_err(|_| "剪贴板状态不可用")?
+        .batch(acknowledged))
 }
 // X11 ClipboardContext owns a serving thread. Reuse one context rather than
 // leaking a thread and X connection on every capture tick.
@@ -150,7 +363,8 @@ fn decode_text_buffer(format: &str, bytes: &[u8]) -> Option<String> {
     let name = format.to_ascii_lowercase();
     if bytes.starts_with(&[0xff, 0xfe])
         || bytes.starts_with(&[0xfe, 0xff])
-        || (name.contains("utf16") || name.contains("unicode"))
+        || name.contains("utf16") || name.contains("utf-16") || name.contains("unicode")
+        || name == "uniformresourcelocatorw"
     {
         let mut units = Vec::with_capacity(bytes.len() / 2);
         let (body, little_endian) = if bytes.starts_with(&[0xff, 0xfe]) {
@@ -169,7 +383,17 @@ fn decode_text_buffer(format: &str, bytes: &[u8]) -> Option<String> {
         }
         return String::from_utf16(&units).ok().and_then(plausible_text);
     }
-    String::from_utf8(bytes.to_vec()).ok().and_then(plausible_text)
+    String::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes).to_vec())
+        .ok().and_then(plausible_text)
+}
+
+fn is_text_format(format: &str) -> bool {
+    let name = format.to_ascii_lowercase();
+    matches!(name.as_str(), "string" | "text" | "utf8_string" | "unicodetext"
+        | "public.text" | "public.url" | "nsstringpboardtype" | "nspasteboardtypestring"
+        | "uniformresourcelocator" | "uniformresourcelocatorw")
+        || name.starts_with("text/plain") || name == "text/uri-list"
+        || name.contains("plain-text")
 }
 
 fn html_text(html: &str) -> String {
@@ -221,17 +445,9 @@ fn read_text_payload(context: &ClipboardContext, formats: &[String]) -> String {
 
     // Some apps (notably virtual machines and rich-text editors) publish a
     // usable UTF-8/UTF-16 representation without NSPasteboardTypeString.
-    let mut candidates = formats.iter().filter(|format| {
-        let name = format.to_ascii_lowercase();
-        !name.contains("html")
-            && !name.contains("rtf")
-            && !name.contains("png")
-            && !name.contains("tiff")
-            && !name.contains("file")
-            && !name.contains("url")
-            && !name.contains("concealed")
-            && !name.contains("transient")
-    });
+    // Do not mistake an app's private metadata for the copied text and then
+    // acknowledge it before a delayed text representation becomes readable.
+    let mut candidates = formats.iter().filter(|format| is_text_format(format));
     if let Some(text) = candidates.find_map(|format| {
         context
             .get_buffer(format)
@@ -250,13 +466,20 @@ fn read_text_payload(context: &ClipboardContext, formats: &[String]) -> String {
         .unwrap_or_default()
 }
 
-fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Value>, String> {
+fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<CaptureOutcome, String> {
+    #[cfg(target_os = "macos")]
+    { objc2::rc::autoreleasepool(|_| read_snapshot(app, ignored_apps)) }
+    #[cfg(not(target_os = "macos"))]
+    { read_snapshot(app, ignored_apps) }
+}
+
+fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<CaptureOutcome, String> {
     let state = app.state::<ClipboardRuntime>();
     let current = sequence();
     if let Some(seq) = current {
         let previous = state.sequence.lock().map_err(|_| "剪贴板状态不可用")?;
         if *previous == Some(seq) {
-            return Ok(None);
+            return Ok(CaptureOutcome::Unchanged);
         }
     }
     let guard = context()?;
@@ -267,28 +490,60 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
         .iter()
         .any(|name| !name.trim().is_empty() && source_key.contains(&name.trim().to_lowercase()))
     {
-        return Ok(None);
+        if current == sequence() {
+            *state.sequence.lock().map_err(|_| "剪贴板状态不可用")? = current;
+        }
+        return Ok(CaptureOutcome::Skipped("本次复制来自排除的应用，未记录。可在隐私与保留规则中检查排除列表。"));
     }
-    let formats = context.available_formats().unwrap_or_default();
+    let formats = context.available_formats().map_err(|_| "暂时无法读取系统剪贴板，正在自动重试")?;
     if formats
         .iter()
         .any(|format| format.to_ascii_lowercase().contains("concealedtype"))
     {
-        return Ok(None);
+        if current == sequence() {
+            *state.sequence.lock().map_err(|_| "剪贴板状态不可用")? = current;
+        }
+        return Ok(CaptureOutcome::Skipped("本次复制被来源应用标记为机密内容，未记录。"));
     }
     let text = read_text_payload(context, &formats);
     if text.len() > 1_000_000 {
         return Err("剪贴板文本超过 1 MB，已跳过记录".into());
     }
-    let files = context
-        .get_files()
-        .unwrap_or_default()
-        .into_iter()
+    // Use the owner's advertised types instead of requesting AppKit conversions.
+    #[cfg(target_os = "macos")]
+    let has_files = formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "NSFilenamesPboardType"));
+    #[cfg(not(target_os = "macos"))]
+    let has_files = context.has(ContentFormat::Files);
+    let files = (if has_files {
+        context.get_files().map_err(|_| "剪贴板文件列表暂时不可用，正在重试")?
+    } else { Vec::new() }).into_iter()
         .take(128)
         .collect::<Vec<_>>();
+    if has_files && files.is_empty() {
+        return Err("剪贴板文件列表尚未就绪，正在重试".into());
+    }
     let mut value = json!({ "text":text, "files":files });
-    let image = if files.is_empty() {
-        context.get_image().ok().filter(|image| !image.is_empty())
+    #[cfg(target_os = "macos")]
+    let image_format = ["public.png", "public.tiff", "public.jpeg", "public.gif", "com.compuserve.gif",
+        "public.bmp", "com.microsoft.bmp", "org.webmproject.webp", "public.heic", "public.heif"]
+        .into_iter().find(|expected| formats.iter().any(|format| format == expected));
+    #[cfg(not(target_os = "macos"))]
+    let has_image = context.has(ContentFormat::Image);
+    #[cfg(target_os = "macos")]
+    let has_image = image_format.is_some();
+    let image = if files.is_empty() && has_image {
+        // Browsers often attach a URL or alt text to a copied image. Preserve
+        // the actual image, and retry lazy data instead of recording only its URL.
+        #[cfg(target_os = "macos")]
+        let image = {
+            let bytes = context.get_buffer(image_format.unwrap()).map_err(|_| "剪贴板图片尚未就绪，正在重试")?;
+            if bytes.is_empty() { return Err("剪贴板图片尚未就绪，正在重试".into()); }
+            if bytes.len() > 128 * 1024 * 1024 { return Err("图片原始数据超过 128 MB，已跳过记录".into()); }
+            CapturedImage::Encoded(bytes)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let image = CapturedImage::Decoded(context.get_image().map_err(|_| "剪贴板图片尚未就绪或无法读取，正在重试")?);
+        Some(image)
     } else {
         None
     };
@@ -298,55 +553,47 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
         hash.update(path.as_bytes());
         hash.update([0]);
     }
-    let kind = if !files.is_empty() {
-        "file"
-    } else if let Some(image) = image {
-        let (width, height) = image.get_size();
-        if width as u64 * height as u64 > 32_000_000 {
-            return Err("图片超过 3200 万像素，已跳过记录".into());
-        }
-        let png = image.to_png().map_err(|_| "无法读取剪贴板图片")?;
-        if png.get_bytes().len() > 10 * 1024 * 1024 {
-            return Err("图片超过 10 MB，已跳过记录".into());
-        }
-        let key = format!("{:x}", Sha256::digest(png.get_bytes()));
-        hash.update(png.get_bytes());
-        let path = image_path(app, &key)?;
-        if !path.exists() {
-            fs::write(&path, png.get_bytes()).map_err(|error| error.to_string())?;
-        }
-        value["imageKey"] = json!(key);
-        value["byteSize"] = json!(png.get_bytes().len());
-        value["width"] = json!(width);
-        value["height"] = json!(height);
-        if let Ok(thumbnail) = image.thumbnail(320, 200).and_then(|image| image.to_png()) {
-            value["thumbnail"] = json!(format!(
-                "data:image/png;base64,{}",
-                STANDARD.encode(thumbnail.get_bytes())
-            ));
-        }
-        "image"
-    } else {
-        "text"
+    let image_bytes = match &image {
+        #[cfg(target_os = "macos")]
+        Some(CapturedImage::Encoded(bytes)) => { hash.update(bytes); bytes.len() },
+        #[cfg(not(target_os = "macos"))]
+        Some(CapturedImage::Decoded(image)) => {
+            let (width, height) = image.get_size();
+            if width as u64 * height as u64 > 32_000_000 { return Err("图片超过 3200 万像素，已跳过记录".into()); }
+            if current.is_none() {
+                hash.update(image.to_rgba8().map_err(|_| "无法读取图片像素")?.as_raw());
+                hash.update(width.to_le_bytes()); hash.update(height.to_le_bytes());
+            }
+            width as usize * height as usize * 4
+        },
+        None => 0,
     };
+    let kind = if !files.is_empty() { "file" } else if image.is_some() { "image" } else { "text" };
     if kind == "text" && text.trim().is_empty() {
-        return Ok(None);
+        return Ok(if formats.is_empty() { CaptureOutcome::Unchanged } else {
+            CaptureOutcome::Skipped("本次剪贴板内容尚未读取到可用的文字、图片或文件，正在重试。")
+        });
     }
     let id = format!("{:x}", hash.finalize());
+    let html = context
+        .get_html()
+        .ok()
+        .filter(|html| html.len() < 1_000_000);
+    // Reading lazy formats can trigger a new copy (VMs and rich-text apps).
+    // Never combine representations from two different clipboard revisions.
+    if current != sequence() {
+        return Ok(CaptureOutcome::Unchanged);
+    }
     // Only acknowledge a sequence after successfully reading the payload. A
     // denied/temporarily unavailable pasteboard must be retried on the next tick.
     if let Some(seq) = current {
         *state.sequence.lock().map_err(|_| "剪贴板状态不可用")? = Some(seq);
     }
     let mut previous = state.fingerprint.lock().map_err(|_| "剪贴板状态不可用")?;
-    if *previous == id {
-        return Ok(None);
+    if current.is_none() && *previous == id {
+        return Ok(CaptureOutcome::Unchanged);
     }
     *previous = id.clone();
-    let html = context
-        .get_html()
-        .ok()
-        .filter(|html| html.len() < 1_000_000);
     value["id"] = json!(id);
     value["kind"] = json!(kind);
     value["html"] = json!(html);
@@ -354,14 +601,57 @@ fn snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Option<Va
     value["sourceId"] = json!(source_id);
     value["createdAt"] = json!(millis());
     value["updatedAt"] = value["createdAt"].clone();
-    Ok(Some(value))
+    Ok(CaptureOutcome::Entry(CapturedCopy { value, image, image_bytes }))
+}
+
+fn finish_copy(app: &tauri::AppHandle, copy: CapturedCopy) -> Result<Value, String> {
+    let mut value = copy.value;
+    if let Some(image) = copy.image {
+        // Decode/encode, hashing, disk IO and thumbnail work never hold the
+        // system clipboard lock or pause the capture loop.
+        let image = match image {
+            #[cfg(target_os = "macos")]
+            CapturedImage::Encoded(bytes) => {
+                let dimensions = image::ImageReader::new(std::io::Cursor::new(&bytes))
+                    .with_guessed_format().map_err(|_| "无法识别剪贴板图片格式")?
+                    .into_dimensions().map_err(|_| "无法读取剪贴板图片尺寸")?;
+                if dimensions.0 as u64 * dimensions.1 as u64 > 32_000_000 {
+                    return Err("图片超过 3200 万像素，已跳过记录".into());
+                }
+                RustImageData::from_bytes(&bytes).map_err(|_| "无法解码剪贴板图片")?
+            }
+            #[cfg(not(target_os = "macos"))]
+            CapturedImage::Decoded(image) => image,
+        };
+        let (width, height) = image.get_size();
+        let png = image.to_png().map_err(|_| "无法读取剪贴板图片")?;
+        if png.get_bytes().len() > 10 * 1024 * 1024 { return Err("图片超过 10 MB，已跳过记录".into()); }
+        let key = format!("{:x}", Sha256::digest(png.get_bytes()));
+        let path = image_path(app, &key)?;
+        if !path.exists() { fs::write(&path, png.get_bytes()).map_err(|error| error.to_string())?; }
+        let mut hash = Sha256::new();
+        hash.update(value["text"].as_str().unwrap_or_default().as_bytes());
+        hash.update(png.get_bytes());
+        value["id"] = json!(format!("{:x}", hash.finalize()));
+        value["imageKey"] = json!(key);
+        value["byteSize"] = json!(png.get_bytes().len());
+        value["width"] = json!(width);
+        value["height"] = json!(height);
+        if let Ok(thumbnail) = image.thumbnail(320, 200).and_then(|image| image.to_png()) {
+            value["thumbnail"] = json!(format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.get_bytes())));
+        }
+    }
+    Ok(value)
 }
 #[tauri::command]
 pub async fn clipboard_snapshot(
     app: tauri::AppHandle,
     ignored_apps: Vec<String>,
 ) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || snapshot(&app, &ignored_apps))
+    tauri::async_runtime::spawn_blocking(move || match snapshot(&app, &ignored_apps)? {
+        CaptureOutcome::Entry(copy) => finish_copy(&app, copy).map(Some),
+        _ => Ok(None),
+    })
         .await
         .map_err(|_| "剪贴板读取任务失败")?
 }
@@ -607,7 +897,60 @@ pub async fn export_clipboard_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_text_buffer, html_text, file_info};
+    use super::{decode_text_buffer, html_text, file_info, is_text_format, CaptureBuffer};
+
+    #[test]
+    fn captures_remain_queued_until_a_delivered_batch_is_acknowledged() {
+        let mut buffer = CaptureBuffer::default();
+        buffer.configure(true, vec![]);
+        for number in 1..=70 {
+            buffer.push(serde_json::json!({ "id": number, "text": format!("copy {number}") }));
+        }
+        let batch = buffer.batch(0);
+        assert_eq!(batch["entries"].as_array().unwrap().len(), 32);
+        assert_eq!(batch["cursor"], 32);
+        // A suspended/disconnected frontend receives exactly the same batch.
+        assert_eq!(buffer.batch(0), batch);
+        assert_eq!(buffer.pending.len(), 70);
+        let next = buffer.batch(32);
+        assert_eq!(next["entries"][0]["id"], 33);
+        assert_eq!(next["cursor"], 64);
+        assert_eq!(buffer.batch(64)["entries"].as_array().unwrap().len(), 6);
+        assert!(buffer.batch(70)["entries"].as_array().unwrap().is_empty());
+        assert_eq!(buffer.bytes, 0);
+        buffer.push(serde_json::json!({ "text": "x".repeat(5 * 1024 * 1024) }));
+        assert_eq!(buffer.batch(70)["entries"].as_array().unwrap().len(), 1);
+        assert!(buffer.batch(71)["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn capture_pause_discards_pending_data_and_overflow_is_visible() {
+        let mut buffer = CaptureBuffer::default();
+        assert!(buffer.configure(true, vec![]));
+        let revision = buffer.revision;
+        assert!(!buffer.configure(true, vec!["excluded".into()]));
+        assert!(buffer.revision > revision);
+        for number in 0..520 { buffer.push(serde_json::json!({ "id": number })); }
+        assert_eq!(buffer.pending.len(), 512);
+        assert_eq!(buffer.batch(0)["dropped"], 8);
+        buffer.configure(false, vec![]);
+        assert!(buffer.pending.is_empty());
+        assert_eq!(buffer.bytes, 0);
+        assert_eq!(buffer.dropped, 0);
+        assert!(!buffer.enabled);
+    }
+
+    #[test]
+    fn known_text_formats_do_not_confuse_private_metadata_with_content() {
+        for format in ["public.utf8-plain-text", "public.utf16-plain-text", "text/plain;charset=utf-8",
+            "UTF8_STRING", "UnicodeText", "public.url", "UniformResourceLocatorW"] {
+            assert!(is_text_format(format), "{format}");
+        }
+        for format in ["com.tencent.qq.metadata", "org.nspasteboard.source", "public.html", "public.rtf", "public.png", "unknown format"] {
+            assert!(!is_text_format(format), "{format}");
+        }
+        assert_eq!(decode_text_buffer("UTF8_STRING", b"\xef\xbb\xbftext").as_deref(), Some("text"));
+    }
 
     #[test]
     fn file_sizes_distinguish_empty_files_directories_and_missing_paths() {
