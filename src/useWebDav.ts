@@ -93,7 +93,7 @@ export function useWebDav(
           setStatus(
             s.language === "en" ? "Uploading images…" : "正在上传图片…",
           );
-          await syncDavImage(s.webdav, key, true);
+          await syncDavImage(s.webdav, key, true, outgoing.find((clip) => clip.imageKey === key)?.imageFormat);
         }
         await writeDav(
           s.webdav,

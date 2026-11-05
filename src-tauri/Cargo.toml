@@ -25,13 +25,13 @@ rfd = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
 plist = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 clipboard-rs = "0.3.5"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSImage", "NSBitmapImageRep", "NSColor", "NSGlassEffectView", "NSAppearance", "NSFontManager", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSBitmapImageRep", "NSColor", "NSGlassEffectView", "NSAppearance", "NSFontManager", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSString"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
 

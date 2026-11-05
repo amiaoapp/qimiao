@@ -245,7 +245,7 @@ export default function ClipboardPane({
     setWorking(true);
     try {
       if (clip.imageKey && settings.webdav.clipboardEnabled && !plain)
-        await syncDavImage(settings.webdav, clip.imageKey, false);
+        await syncDavImage(settings.webdav, clip.imageKey, false, clip.imageFormat);
       await copyClip(clip, plain, paste, enter);
       patch(clip.id, { lastUsedAt: Date.now() });
       showToast(
@@ -829,6 +829,7 @@ export default function ClipboardPane({
                               settings.webdav,
                               item.imageKey,
                               false,
+                              item.imageFormat,
                             );
                           if (await exportClip(item))
                             showToast(en ? "Exported" : "已导出");

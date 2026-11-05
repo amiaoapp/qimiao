@@ -106,13 +106,22 @@ fn send(request: reqwest::blocking::RequestBuilder) -> Result<Response, String> 
         }
     })
 }
+fn valid_image_name(name: &str) -> bool {
+    let Some((key, extension)) = name.strip_prefix("images/").and_then(|name| name.rsplit_once('.')) else { return false; };
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+        && ["png", "jpg", "webp", "gif", "tiff", "bmp"].contains(&extension)
+}
+fn image_content_type(name: &str) -> &'static str {
+    match name.rsplit('.').next() {
+        Some("png") => "image/png", Some("jpg") => "image/jpeg", Some("webp") => "image/webp",
+        Some("gif") => "image/gif", Some("tiff") => "image/tiff", Some("bmp") => "image/bmp",
+        _ => "application/json; charset=utf-8",
+    }
+}
 fn object_url(config: &DavConfig, name: &str) -> Result<Url, String> {
     if name != "configuration.json"
         && name != "clipboard.json"
-        && !(name.starts_with("images/")
-            && name.ends_with(".png")
-            && name.len() == 75
-            && name[7..71].bytes().all(|b| b.is_ascii_hexdigit()))
+        && !valid_image_name(name)
     {
         return Err("不允许的同步对象".into());
     }
@@ -222,11 +231,7 @@ pub fn write_bytes(
         .basic_auth(&config.username, Some(password))
         .header(
             header::CONTENT_TYPE,
-            if name.ends_with(".png") {
-                "image/png"
-            } else {
-                "application/json; charset=utf-8"
-            },
+            image_content_type(name),
         );
     request = if let Some(etag) = etag {
         request.header(header::IF_MATCH, etag)
@@ -387,6 +392,18 @@ mod tests {
                 .path(),
             "/root/qimiao/clipboard.json"
         );
+    }
+    #[test]
+    fn original_image_sync_names_are_safe_and_keep_their_mime_type() {
+        let dav = config("https://dav.example.test/root/");
+        for (extension, mime) in [("png", "image/png"), ("jpg", "image/jpeg"), ("webp", "image/webp"), ("gif", "image/gif"), ("tiff", "image/tiff"), ("bmp", "image/bmp")] {
+            let name = format!("images/{}.{}", "a".repeat(64), extension);
+            assert!(object_url(&dav, &name).is_ok());
+            assert_eq!(image_content_type(&name), mime);
+        }
+        for name in [format!("images/{}.exe", "a".repeat(64)), format!("images/../{}.webp", "a".repeat(64)), "images/short.webp".into(), "images/é.webp".into()] {
+            assert!(object_url(&dav, &name).is_err());
+        }
     }
     fn server(responses: Vec<String>) -> (DavConfig, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write};

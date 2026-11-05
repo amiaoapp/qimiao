@@ -407,3 +407,20 @@ test("app launch hides the launcher before waiting for the OS, and propagates fa
   assert.deepEqual(order,["hide","launch"]);finish();await running;
   await assert.rejects(()=>compact.launchWithImmediateHide(async()=>{},async()=>{throw new Error("missing app");}),/missing app/);
 });
+
+
+test("original image metadata survives capture, persistence and sync alongside legacy PNG records", () => {
+  const now = Date.now();
+  for (const imageFormat of ["webp", "jpg", "png", undefined]) {
+    const entry = { id: `image-${imageFormat}`, kind: "image", text: "", createdAt: now, updatedAt: now, imageKey: "a".repeat(64), imageFormat, byteSize: 256000, width: 1200, height: 800 };
+    const captured = capture.acceptClipboardBatch([], [entry], { ...clipboard.defaultClipOptions, retentionDays: 0 }).clips;
+    const restored = clipboard.validateClips(JSON.parse(JSON.stringify(captured)));
+    const outgoing = clipboard.clipsForSync(restored, true);
+    assert.equal(outgoing.length, 1);
+    assert.equal(outgoing[0].imageFormat, imageFormat);
+    assert.equal(outgoing[0].byteSize, 256000);
+    assert.equal(outgoing[0].imageKey, entry.imageKey);
+  }
+  const invalid = clipboard.validateClips([{ id: "bad", kind: "image", text: "", createdAt: now, updatedAt: now, imageKey: "a".repeat(64), imageFormat: "../webp" }]);
+  assert.equal(invalid[0].imageFormat, undefined);
+});

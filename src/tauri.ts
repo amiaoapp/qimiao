@@ -60,8 +60,8 @@ export async function writeDav(config: DavOptions, kind: "clipboard" | "configur
   if (!isTauri()) throw new Error("Use the desktop app");
   await desktopInvoke("webdav_write", { config:davConfig(config), kind, data, etag:remote?.etag ?? null, modified:remote?.modified ?? null, exists:remote !== null });
 }
-export async function syncDavImage(config: DavOptions, key: string, upload: boolean) {
-  if (isTauri()) await desktopInvoke("webdav_image", { config:davConfig(config), key, upload });
+export async function syncDavImage(config: DavOptions, key: string, upload: boolean, imageFormat?: string) {
+  if (isTauri()) await desktopInvoke("webdav_image", { config:davConfig(config), key, upload, imageFormat });
 }
 let fontCatalog: Promise<string[]> | undefined;
 export function listLocalFonts(refresh = false): Promise<string[]> {

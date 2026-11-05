@@ -27,6 +27,7 @@ export type Clip = {
   html?: string;
   files?: string[];
   imageKey?: string;
+  imageFormat?: "png" | "jpg" | "webp" | "gif" | "tiff" | "bmp";
   thumbnail?: string;
   width?: number;
   height?: number;
@@ -249,6 +250,7 @@ export function validateClips(value: unknown): Clip[] {
           typeof c.imageKey === "string" && /^[a-f\d]{64}$/.test(c.imageKey)
             ? c.imageKey
             : undefined,
+        imageFormat: ["png", "jpg", "webp", "gif", "tiff", "bmp"].includes(String(c.imageFormat)) ? c.imageFormat as Clip["imageFormat"] : undefined,
         files: Array.isArray(c.files)
           ? c.files
               .filter(

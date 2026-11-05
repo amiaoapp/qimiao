@@ -35,7 +35,6 @@ enum CaptureOutcome {
 }
 
 enum CapturedImage {
-    #[cfg(target_os = "macos")]
     Encoded(Vec<u8>),
     #[cfg(not(target_os = "macos"))]
     Decoded(RustImageData),
@@ -278,12 +277,91 @@ fn folder(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
     Ok(folder)
 }
-pub fn image_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "webp", "gif", "tiff", "bmp"];
+fn image_extension(format: Option<&str>) -> Result<&str, String> {
+    let extension = format.unwrap_or("png"); // Existing history and remote PNGs.
+    IMAGE_EXTENSIONS.contains(&extension).then_some(extension).ok_or("图片格式不合法".into())
+}
+pub fn image_path(app: &tauri::AppHandle, key: &str, format: Option<&str>) -> Result<PathBuf, String> {
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("图片标识不合法".into());
     }
-    Ok(folder(app)?.join("images").join(format!("{key}.png")))
+    let extension = image_extension(format)?;
+    Ok(folder(app)?.join("images").join(format!("{key}.{extension}")))
 }
+
+// Prefer encoded formats over synthesized TIFF/bitmap representations. AppKit
+// advertises TIFF even when the owner supplied only compressed WebP bytes.
+fn encoded_image_format(formats: &[String]) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    let priority = ["org.webmproject.webp", "public.jpeg", "public.png", "com.compuserve.gif", "public.gif", "com.microsoft.bmp", "public.bmp", "public.tiff"];
+    #[cfg(not(target_os = "macos"))]
+    let priority = ["image/webp", "image/jpeg", "image/png", "PNG", "image/gif", "image/bmp", "image/tiff"];
+    priority.into_iter().find(|expected| formats.iter().any(|format| format == expected))
+}
+
+struct PreparedImage {
+    bytes: Vec<u8>,
+    extension: &'static str,
+    image: RustImageData,
+}
+fn prepare_image(bytes: Vec<u8>) -> Result<PreparedImage, String> {
+    if bytes.len() > 10 * 1024 * 1024 { return Err("图片超过 10 MB，已跳过记录".into()); }
+    let format = image::guess_format(&bytes).map_err(|_| "无法识别剪贴板图片格式")?;
+    let extension = match format {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::WebP => "webp",
+        image::ImageFormat::Gif => "gif",
+        image::ImageFormat::Tiff => "tiff",
+        image::ImageFormat::Bmp => "bmp",
+        _ => return Err("不支持的剪贴板图片格式".into()),
+    };
+    let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format)
+        .into_dimensions().map_err(|_| "无法读取剪贴板图片尺寸")?;
+    if width as u64 * height as u64 > 32_000_000 {
+        return Err("图片超过 3200 万像素，已跳过记录".into());
+    }
+    let image = RustImageData::from_bytes(&bytes).map_err(|_| "无法解码剪贴板图片")?;
+    Ok(PreparedImage { bytes, extension, image })
+}
+
+#[cfg(target_os = "macos")]
+fn write_encoded_macos(board: &objc2_app_kit::NSPasteboard, image: &PreparedImage) -> Result<(), String> {
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_app_kit::{NSPasteboardItem, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSData, NSString};
+    let uti = match image.extension {
+        "jpg" => "public.jpeg", "webp" => "org.webmproject.webp", "gif" => "com.compuserve.gif",
+        "tiff" => "public.tiff", "bmp" => "com.microsoft.bmp", _ => "public.png",
+    };
+    let item = NSPasteboardItem::new();
+    if !item.setData_forType(&NSData::with_bytes(&image.bytes), &NSString::from_str(uti)) {
+        return Err("无法准备原格式图片".into());
+    }
+    let object: Retained<ProtocolObject<dyn NSPasteboardWriting>> = ProtocolObject::from_retained(item);
+    board.clearContents();
+    if board.writeObjects(&NSArray::from_retained_slice(&[object])) { Ok(()) } else { Err("写入图片失败".into()) }
+}
+fn write_encoded_image(context: &ClipboardContext, image: PreparedImage) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = context;
+        objc2::rc::autoreleasepool(|_| write_encoded_macos(&objc2_app_kit::NSPasteboard::generalPasteboard(), &image))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mime = match image.extension {
+            "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif",
+            "tiff" => "image/tiff", "bmp" => "image/bmp", _ => "image/png",
+        };
+        // Bitmap first: clipboard-rs clears the Windows clipboard when setting
+        // an image. Append the exact encoded representation afterwards.
+        context.set(vec![ClipboardContent::Image(image.image), ClipboardContent::Other(mime.into(), image.bytes)])
+            .map_err(|_| "写入图片失败".into())
+    }
+}
+
 fn sequence() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
@@ -509,11 +587,14 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
     if text.len() > 1_000_000 {
         return Err("剪贴板文本超过 1 MB，已跳过记录".into());
     }
+    let image_format = encoded_image_format(&formats);
     // Use the owner's advertised types instead of requesting AppKit conversions.
     #[cfg(target_os = "macos")]
     let has_files = formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "NSFilenamesPboardType"));
     #[cfg(not(target_os = "macos"))]
     let has_files = context.has(ContentFormat::Files);
+    #[cfg(not(target_os = "macos"))]
+    let has_files = has_files && !image_format.is_some_and(|format| format.starts_with("image/"));
     let files = (if has_files {
         context.get_files().map_err(|_| "剪贴板文件列表暂时不可用，正在重试")?
     } else { Vec::new() }).into_iter()
@@ -523,26 +604,24 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
         return Err("剪贴板文件列表尚未就绪，正在重试".into());
     }
     let mut value = json!({ "text":text, "files":files });
-    #[cfg(target_os = "macos")]
-    let image_format = ["public.png", "public.tiff", "public.jpeg", "public.gif", "com.compuserve.gif",
-        "public.bmp", "com.microsoft.bmp", "org.webmproject.webp", "public.heic", "public.heif"]
-        .into_iter().find(|expected| formats.iter().any(|format| format == expected));
     #[cfg(not(target_os = "macos"))]
-    let has_image = context.has(ContentFormat::Image);
+    let has_image = image_format.is_some() || context.has(ContentFormat::Image);
     #[cfg(target_os = "macos")]
     let has_image = image_format.is_some();
     let image = if files.is_empty() && has_image {
         // Browsers often attach a URL or alt text to a copied image. Preserve
         // the actual image, and retry lazy data instead of recording only its URL.
-        #[cfg(target_os = "macos")]
-        let image = {
-            let bytes = context.get_buffer(image_format.unwrap()).map_err(|_| "剪贴板图片尚未就绪，正在重试")?;
+        let image = if let Some(format) = image_format {
+            let bytes = context.get_buffer(format).map_err(|_| "剪贴板图片尚未就绪，正在重试")?;
             if bytes.is_empty() { return Err("剪贴板图片尚未就绪，正在重试".into()); }
             if bytes.len() > 128 * 1024 * 1024 { return Err("图片原始数据超过 128 MB，已跳过记录".into()); }
             CapturedImage::Encoded(bytes)
+        } else {
+            #[cfg(not(target_os = "macos"))]
+            { CapturedImage::Decoded(context.get_image().map_err(|_| "剪贴板图片尚未就绪或无法读取，正在重试")?) }
+            #[cfg(target_os = "macos")]
+            { return Err("剪贴板图片格式暂不支持".into()); }
         };
-        #[cfg(not(target_os = "macos"))]
-        let image = CapturedImage::Decoded(context.get_image().map_err(|_| "剪贴板图片尚未就绪或无法读取，正在重试")?);
         Some(image)
     } else {
         None
@@ -554,7 +633,6 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
         hash.update([0]);
     }
     let image_bytes = match &image {
-        #[cfg(target_os = "macos")]
         Some(CapturedImage::Encoded(bytes)) => { hash.update(bytes); bytes.len() },
         #[cfg(not(target_os = "macos"))]
         Some(CapturedImage::Decoded(image)) => {
@@ -604,42 +682,37 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
     Ok(CaptureOutcome::Entry(CapturedCopy { value, image, image_bytes }))
 }
 
+fn store_image(directory: &std::path::Path, value: &mut Value, prepared: PreparedImage) -> Result<(), String> {
+    let (width, height) = prepared.image.get_size();
+    let key = format!("{:x}", Sha256::digest(&prepared.bytes));
+    let path = directory.join(format!("{key}.{}", prepared.extension));
+    if !path.exists() { fs::write(&path, &prepared.bytes).map_err(|error| error.to_string())?; }
+    let mut hash = Sha256::new();
+    hash.update(value["text"].as_str().unwrap_or_default().as_bytes());
+    hash.update(&prepared.bytes);
+    value["id"] = json!(format!("{:x}", hash.finalize()));
+    value["imageKey"] = json!(key);
+    value["imageFormat"] = json!(prepared.extension);
+    value["byteSize"] = json!(prepared.bytes.len());
+    value["width"] = json!(width);
+    value["height"] = json!(height);
+    if let Ok(thumbnail) = prepared.image.thumbnail(320, 200).and_then(|image| image.to_png()) {
+        value["thumbnail"] = json!(format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.get_bytes())));
+    }
+    Ok(())
+}
+
 fn finish_copy(app: &tauri::AppHandle, copy: CapturedCopy) -> Result<Value, String> {
     let mut value = copy.value;
     if let Some(image) = copy.image {
         // Decode/encode, hashing, disk IO and thumbnail work never hold the
         // system clipboard lock or pause the capture loop.
-        let image = match image {
-            #[cfg(target_os = "macos")]
-            CapturedImage::Encoded(bytes) => {
-                let dimensions = image::ImageReader::new(std::io::Cursor::new(&bytes))
-                    .with_guessed_format().map_err(|_| "无法识别剪贴板图片格式")?
-                    .into_dimensions().map_err(|_| "无法读取剪贴板图片尺寸")?;
-                if dimensions.0 as u64 * dimensions.1 as u64 > 32_000_000 {
-                    return Err("图片超过 3200 万像素，已跳过记录".into());
-                }
-                RustImageData::from_bytes(&bytes).map_err(|_| "无法解码剪贴板图片")?
-            }
+        let prepared = match image {
+            CapturedImage::Encoded(bytes) => prepare_image(bytes)?,
             #[cfg(not(target_os = "macos"))]
-            CapturedImage::Decoded(image) => image,
+            CapturedImage::Decoded(image) => prepare_image(image.to_png().map_err(|_| "无法读取剪贴板图片")?.get_bytes().to_vec())?,
         };
-        let (width, height) = image.get_size();
-        let png = image.to_png().map_err(|_| "无法读取剪贴板图片")?;
-        if png.get_bytes().len() > 10 * 1024 * 1024 { return Err("图片超过 10 MB，已跳过记录".into()); }
-        let key = format!("{:x}", Sha256::digest(png.get_bytes()));
-        let path = image_path(app, &key)?;
-        if !path.exists() { fs::write(&path, png.get_bytes()).map_err(|error| error.to_string())?; }
-        let mut hash = Sha256::new();
-        hash.update(value["text"].as_str().unwrap_or_default().as_bytes());
-        hash.update(png.get_bytes());
-        value["id"] = json!(format!("{:x}", hash.finalize()));
-        value["imageKey"] = json!(key);
-        value["byteSize"] = json!(png.get_bytes().len());
-        value["width"] = json!(width);
-        value["height"] = json!(height);
-        if let Ok(thumbnail) = image.thumbnail(320, 200).and_then(|image| image.to_png()) {
-            value["thumbnail"] = json!(format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.get_bytes())));
-        }
+        store_image(&folder(app)?.join("images"), &mut value, prepared)?;
     }
     Ok(value)
 }
@@ -695,7 +768,7 @@ pub async fn load_clipboard_history(app: tauri::AppHandle) -> Result<Value, Stri
         if let Some(items) = entries.as_array_mut() {
             for item in items.iter_mut().filter(|item| item["kind"] == "image" && item["byteSize"].is_null()) {
                 if let Some(metadata) = item["imageKey"].as_str()
-                    .and_then(|key| image_path(&app, key).ok())
+                    .and_then(|key| image_path(&app, key, item["imageFormat"].as_str()).ok())
                     .and_then(|path| fs::metadata(path).ok()) {
                     item["byteSize"] = json!(metadata.len());
                 }
@@ -743,10 +816,9 @@ fn put_clipboard(app: &tauri::AppHandle, clip: &Value, plain: bool) -> Result<()
         .to_string();
     if !plain {
         if let Some(key) = clip.get("imageKey").and_then(Value::as_str) {
-            let path = image_path(app, key)?;
-            let image = RustImageData::from_path(path.to_str().ok_or("图片路径无效")?)
-                .map_err(|_| "原图不在本机，请先下载图片或同步剪贴板")?;
-            return context.set_image(image).map_err(|_| "写入图片失败".into());
+            let path = image_path(app, key, clip["imageFormat"].as_str())?;
+            let bytes = fs::read(path).map_err(|_| "原图不在本机，请先下载图片或同步剪贴板")?;
+            return write_encoded_image(context, prepare_image(bytes)?);
         }
         if let Some(files) = clip
             .get("files")
@@ -866,12 +938,9 @@ pub async fn export_clipboard_item(
             .native_dialog_open
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let image = clip.get("imageKey").and_then(Value::as_str);
+        let filename = if image.is_some() { format!("clipboard.{}", image_extension(clip["imageFormat"].as_str())?) } else { "clipboard.txt".into() };
         let path = rfd::FileDialog::new()
-            .set_file_name(if image.is_some() {
-                "clipboard.png"
-            } else {
-                "clipboard.txt"
-            })
+            .set_file_name(&filename)
             .save_file();
         runtime
             .native_dialog_open
@@ -881,7 +950,7 @@ pub async fn export_clipboard_item(
             return Ok(None);
         };
         if let Some(key) = image {
-            fs::copy(image_path(&app, key)?, &path).map_err(|error| error.to_string())?;
+            fs::copy(image_path(&app, key, clip["imageFormat"].as_str())?, &path).map_err(|error| error.to_string())?;
         } else {
             fs::write(
                 &path,
@@ -898,6 +967,75 @@ pub async fn export_clipboard_item(
 #[cfg(test)]
 mod tests {
     use super::{decode_text_buffer, html_text, file_info, is_text_format, CaptureBuffer};
+
+    fn encoded_fixture(format: image::ImageFormat) -> Vec<u8> {
+        let image = image::DynamicImage::new_rgb8(48, 32);
+        let mut output = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut output, format).unwrap();
+        output.into_inner()
+    }
+
+    #[test]
+    fn preserves_encoded_bytes_size_extension_and_digest_through_storage() {
+        use super::*;
+        let directory = std::env::temp_dir().join(format!("qimiao-original-test-{}-{}", std::process::id(), millis()));
+        fs::create_dir_all(&directory).unwrap();
+        for (format, extension) in [(image::ImageFormat::WebP, "webp"), (image::ImageFormat::Jpeg, "jpg"), (image::ImageFormat::Png, "png")] {
+            let original = encoded_fixture(format);
+            let mut record = json!({ "kind": "image", "text": "", "createdAt": 1 });
+            store_image(&directory, &mut record, prepare_image(original.clone()).unwrap()).unwrap();
+            assert_eq!(record["byteSize"], original.len());
+            assert_eq!(record["imageFormat"], extension);
+            assert_eq!(record["width"], 48);
+            assert_eq!(record["height"], 32);
+            let key = format!("{:x}", Sha256::digest(&original));
+            assert_eq!(record["imageKey"], key);
+            let stored = fs::read(directory.join(format!("{key}.{extension}"))).unwrap();
+            assert_eq!(stored, original);
+            // Re-copy and sync validation must retain the same encoded payload.
+            assert_eq!(prepare_image(stored).unwrap().bytes, original);
+            assert!(record["thumbnail"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        }
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(image_extension(None).unwrap(), "png");
+        assert!(image_extension(Some("../webp")).is_err());
+        assert!(prepare_image(b"invalid".to_vec()).is_err());
+        assert!(prepare_image(vec![0; 10 * 1024 * 1024 + 1]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_history_recopy_is_an_image_with_exact_original_bytes() {
+        use super::*;
+        use objc2_app_kit::{NSImage, NSPasteboard};
+        use objc2_foundation::NSString;
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::pasteboardWithUniqueName();
+            for (format, uti) in [(image::ImageFormat::WebP, "org.webmproject.webp"), (image::ImageFormat::Jpeg, "public.jpeg"), (image::ImageFormat::Png, "public.png")] {
+                let bytes = encoded_fixture(format);
+                // Start with a native encoded copy, capture the preferred type,
+                // persist the history record, then re-copy the stored original.
+                write_encoded_macos(&board, &prepare_image(bytes.clone()).unwrap()).unwrap();
+                let formats = board.types().unwrap().iter().map(|item| item.to_string()).collect::<Vec<_>>();
+                assert_eq!(encoded_image_format(&formats), Some(uti));
+                let captured = board.dataForType(&NSString::from_str(encoded_image_format(&formats).unwrap())).unwrap().to_vec();
+                let directory = std::env::temp_dir().join(format!("qimiao-history-recopy-{}-{}", std::process::id(), millis()));
+                fs::create_dir_all(&directory).unwrap();
+                let mut record = json!({ "text": "", "kind": "image" });
+                store_image(&directory, &mut record, prepare_image(captured).unwrap()).unwrap();
+                assert_eq!(record["byteSize"], bytes.len());
+                let path = directory.join(format!("{}.{}", record["imageKey"].as_str().unwrap(), image_extension(record["imageFormat"].as_str()).unwrap()));
+                let stored = fs::read(path).unwrap();
+                assert_eq!(stored, bytes);
+                write_encoded_macos(&board, &prepare_image(stored).unwrap()).unwrap();
+                fs::remove_dir_all(directory).unwrap();
+                assert_eq!(board.dataForType(&NSString::from_str(uti)).unwrap().to_vec(), bytes);
+                assert!(NSImage::canInitWithPasteboard(&board));
+                assert!(!formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "public.utf8-plain-text")));
+            }
+            board.clearContents();
+        });
+    }
 
     #[test]
     fn captures_remain_queued_until_a_delivered_batch_is_acknowledged() {
@@ -1006,14 +1144,16 @@ pub async fn webdav_image(
     config: DavConfig,
     key: String,
     upload: bool,
+    image_format: Option<String>,
 ) -> Result<(), String> {
-    let path = image_path(&app, &key)?;
+    let extension = image_extension(image_format.as_deref())?.to_owned();
+    let path = image_path(&app, &key, Some(&extension))?;
     if !upload && path.exists() {
         return Ok(());
     }
     let password = webdav::session_password(&config, &app.state::<DavRuntime>())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let name = format!("images/{key}.png");
+        let name = format!("images/{key}.{extension}");
         if upload {
             if webdav::image_exists(&config, &password, &name)? {
                 return Ok(());
@@ -1035,18 +1175,9 @@ pub async fn webdav_image(
             if format!("{:x}", Sha256::digest(&bytes)) != key {
                 return Err("原图校验失败，未保存".into());
             }
-            let (width, height) = image::ImageReader::with_format(
-                std::io::Cursor::new(&bytes),
-                image::ImageFormat::Png,
-            )
-            .into_dimensions()
-            .map_err(|_| "远端不是有效 PNG")?;
-            if width as u64 * height as u64 > 32_000_000 {
-                return Err("远端图片超过 3200 万像素，未下载".into());
-            }
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map_err(|_| "远端不是有效 PNG")?;
-            fs::write(path, bytes).map_err(|error| error.to_string())
+            let prepared = prepare_image(bytes)?;
+            if prepared.extension != extension { return Err("远端图片格式与记录不符".into()); }
+            fs::write(path, prepared.bytes).map_err(|error| error.to_string())
         }
     })
     .await
