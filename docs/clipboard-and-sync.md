@@ -33,3 +33,9 @@ Configuration sync is explicit upload or reviewed restore. It includes categorie
 Pinned launcher apps occupy a horizontal shelf on **every** non-search page, including categories and list view. Up to three pins are shown individually; more than three collapse into the first stack icon, with the remaining six positions available for recommendations on the All page. Click the stack to expand/collapse; arrows, Tab and Enter navigate its apps, and Escape/outside click close it. Ordinary pagination and sorting affect only the other apps. During search, the shelf is hidden and matching favorites are ranked before matching ordinary apps. Scans retain pin timestamps and manual categories.
 
 Encoded image data is preserved byte-for-byte for capture, history copy, export and image sync. Only thumbnails are encoded as PNG. Bitmap-only clipboard sources are stored as PNG; existing PNG records remain compatible. The displayed image size is the stored encoded payload size, not the decoded pixel buffer size.
+
+## Installed applications and icons
+
+New installations are detected by comparing the application-directory inventory every 30 seconds and when the launcher becomes visible. The first inventory establishes a baseline, keeping existing manual libraries intact. macOS checks /Applications, /System/Applications and ~/Applications; Windows checks the user and common Start menus; Linux checks standard application directories. Configured scan folders are included. Disable “Automatically add newly installed apps” to keep a manual library. Existing review, favorite, category and folder choices are preserved. Embedded helpers and incomplete macOS bundles are excluded.
+
+Icon requests share a bounded queue and memory cache. A missing or stalled icon shows the application initial instead of an indefinite spinner. macOS uses the native workspace icon API, including asset-catalog and system applications; stale temporary icon paths fall back to fresh extraction.

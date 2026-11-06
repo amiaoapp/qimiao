@@ -68,6 +68,7 @@ export type Settings = {
   categories: string[];
   showRecommendations: boolean;
   autoScanApps: boolean;
+  watchInstalledApps: boolean;
   scanOnLaunch: boolean;
   confirmScanResults: boolean;
   scanDirs: string[];
@@ -98,6 +99,7 @@ export const defaultSettings: Settings = {
   categories: ["效率工具", "开发工具", "创意设计", "娱乐休闲"],
   showRecommendations: true,
   autoScanApps: false,
+  watchInstalledApps: true,
   scanOnLaunch: false,
   confirmScanResults: false,
   scanDirs: [],

@@ -1,3 +1,4 @@
+import { createIconLoader } from "./icon-loader";
 import type { AppItem } from "./types";
 import type { Clip } from "./clipboard-core";
 import type { DavOptions } from "./types";
@@ -82,6 +83,9 @@ export function listLocalFonts(refresh = false): Promise<string[]> {
       return Math.abs(context.measureText(sample).width - baseline) > .1;
     }).sort((a, b) => a.localeCompare(b));
   })().catch((error) => { fontCatalog = undefined; throw error; });
+}
+export async function installedAppPaths(extra: string[]): Promise<string[]> {
+  return isTauri() ? desktopInvoke("installed_app_paths", { extraDirs: extra }) : [];
 }
 export async function scanApps(extra: string[]): Promise<AppItem[]> {
   if (isTauri()) {
@@ -187,13 +191,13 @@ export async function readIcon(path: string): Promise<string> {
   }
   return "";
 }
-export async function loadAppIcon(path: string, name: string): Promise<string> {
+export const loadAppIcon = createIconLoader(async (path: string, name: string): Promise<string> => {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("load_app_icon", { path, name });
   }
   return "";
-}
+});
 export async function openMacosPermission(kind: "input" | "accessibility" | "automation") {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");

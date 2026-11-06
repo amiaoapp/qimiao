@@ -424,3 +424,40 @@ test("original image metadata survives capture, persistence and sync alongside l
   const invalid = clipboard.validateClips([{ id: "bad", kind: "image", text: "", createdAt: now, updatedAt: now, imageKey: "a".repeat(64), imageFormat: "../webp" }]);
   assert.equal(invalid[0].imageFormat, undefined);
 });
+
+test("icon requests share work, bound concurrency and settle failures without blocking other tiles", async () => {
+  const { createIconLoader } = await importBundled("src/icon-loader.ts");
+  const completions = new Map(); let active = 0, peak = 0, calls = 0;
+  const loader = createIconLoader((path) => { calls++; active++; peak = Math.max(peak, active); return new Promise(resolve => completions.set(path, value => { active--; resolve(value); })); }, { concurrency: 2, timeoutMs: 1000 });
+  const a = loader("a", "A"), duplicate = loader("a", "A"), b = loader("b", "B"), c = loader("c", "C");
+  assert.equal(a, duplicate);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(calls, 2); assert.equal(peak, 2);
+  completions.get("a")("data:image/png;base64,AAAA");
+  assert.equal(await a, "data:image/png;base64,AAAA");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(calls, 3);
+  completions.get("b")("not an icon"); completions.get("c")("data:image/png;base64,CCCC");
+  assert.equal(await b, ""); assert.match(await c, /^data:image/); assert.equal(peak, 2);
+  assert.equal(await loader("a", "A"), await a); assert.equal(calls, 3);
+});
+
+test("a stuck icon times out, releases the queue and can be retried", async () => {
+  const { createIconLoader } = await importBundled("src/icon-loader.ts");
+  let calls = 0;
+  const loader = createIconLoader(() => ++calls === 1 ? new Promise(() => {}) : Promise.resolve("data:image/png;base64,AAAA"), { concurrency: 1, timeoutMs: 15, retryMs: 5 });
+  const stuck = loader("stuck", "Stuck"), queued = loader("next", "Next");
+  assert.equal(await stuck, ""); assert.match(await queued, /^data:image/);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(await loader("stuck", "Stuck"), /^data:image/); assert.equal(calls, 3);
+});
+
+test("installation discovery detects only changed paths and preserves first-run manual libraries", async () => {
+  const { changedApplications } = await importBundled("src/app-discovery.ts");
+  assert.deepEqual(changedApplications(null, ["/A.app"]), { added: [], removed: [] });
+  assert.deepEqual(changedApplications(["/A.app"], ["/A.app", "/B.app"]), { added: ["/B.app"], removed: [] });
+  assert.deepEqual(changedApplications(["/A.app", "/B.app"], ["/B.app"]), { added: [], removed: ["/A.app"] });
+  assert.deepEqual(changedApplications(["/A.app", "/B.app"], ["/B.app", "/A.app"]), { added: [], removed: [] });
+  assert.equal(sync.normalizeSettings({}).watchInstalledApps, true);
+  assert.equal(sync.normalizeSettings({ watchInstalledApps: false }).watchInstalledApps, false);
+});

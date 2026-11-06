@@ -1,3 +1,4 @@
+import { changedApplications } from "./app-discovery";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { APP_VERSION } from "./app-version";
 import {
@@ -51,6 +52,7 @@ import {
   chooseFolder,
   desktopApps,
   existingAppPaths,
+  installedAppPaths,
   exportBackup,
   getAutoStart,
   hideLauncher,
@@ -403,6 +405,47 @@ export default function App() {
     )
       refresh();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const discoveryState = useRef({ settings, apps, busy, importReview });
+  discoveryState.current = { settings, apps, busy, importReview };
+  useEffect(() => {
+    if (!settings.watchInstalledApps || !("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false, checking = false;
+    const check = async () => {
+      if (checking || discoveryState.current.busy || discoveryState.current.importReview) return;
+      checking = true;
+      try {
+        const currentSettings = discoveryState.current.settings;
+        const inventory = await installedAppPaths(currentSettings.scanDirs);
+        if (disposed) return;
+        const key = "qimiao-installed-inventory-v1:" + JSON.stringify(currentSettings.scanDirs);
+        const previous = load<string[] | null>(key, null);
+        const { added, removed } = changedApplications(previous, inventory);
+        const missing = added.filter(path => !discoveryState.current.apps.some(app => app.path === path));
+        let found: AppItem[] = [];
+        if (missing.length) {
+          const candidates = await scanApps(currentSettings.scanDirs);
+          if (disposed) return;
+          found = candidates.filter(app => missing.includes(app.path));
+          // A partially copied .app may not have its metadata ready yet.
+          if (found.length !== missing.length) return;
+        }
+        if (disposed) return;
+        if (removed.length) setApps(current => current.filter(app => app.manual || !removed.includes(app.path)));
+        if (found.length) {
+          if (currentSettings.confirmScanResults) setImportReview({ title: currentSettings.language === "en" ? "Newly installed applications" : "发现新安装的应用", apps: found, selected: found.map(app => app.id) });
+          else setApps(current => mergeApps(current, found));
+        }
+        save(key, inventory);
+      } catch (error) { console.warn("自动发现应用失败，将重试", error); }
+      finally { checking = false; }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") void check(); };
+    void check();
+    const timer = window.setInterval(() => void check(), 30_000);
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener("focus", onVisible); document.removeEventListener("visibilitychange", onVisible); };
+  }, [settings.watchInstalledApps, settings.scanDirs]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -1566,39 +1609,23 @@ function AppCard({
   const [iconSrc, setIconSrc] = useState(
     app.icon?.startsWith("data:image/") ? app.icon : "",
   );
-  const [iconFailed, setIconFailed] = useState(false);
   useEffect(() => {
     let active = true;
-    let settled = false;
-    setIconFailed(false);
     setIconSrc(app.icon?.startsWith("data:image/") ? app.icon : "");
-    const timer = window.setTimeout(() => {
-      if (active && !settled) setIconFailed(true);
-    }, 5000);
-    const done = (src: string) => {
-      settled = true;
-      clearTimeout(timer);
-      if (active) {
-        setIconSrc(src || "");
-        setIconFailed(!src.startsWith("data:image/"));
+    const load = async () => {
+      if (app.icon?.startsWith("file:")) {
+        try {
+          const cached = await readIcon(app.icon.slice(5));
+          if (cached.startsWith("data:image/")) return cached;
+        } catch { /* Old temporary caches may disappear after a reboot. */ }
       }
+      return loadAppIcon(app.path, app.name);
     };
-    const fail = () => {
-      settled = true;
-      clearTimeout(timer);
-      if (active) setIconFailed(true);
-    };
-    if (app.icon?.startsWith("file:"))
-      readIcon(app.icon.slice(5)).then(done).catch(fail);
-    if (app.icon?.startsWith("app:"))
-      loadAppIcon(app.icon.slice(4), app.name).then(done).catch(fail);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [app.icon, app.name]);
+    if (image && !app.icon?.startsWith("data:image/")) void load().then(src => { if (active) setIconSrc(src); }).catch(() => {});
+    return () => { active = false; };
+  }, [app.icon, app.path, app.name, image]);
   const fallback = !image && app.icon?.includes("|") ? app.icon.split("|") : ["#667085", app.name?.[0] ?? "?"];
-  const bg = image && !iconFailed ? "transparent" : fallback[0];
+  const bg = image && iconSrc ? "transparent" : fallback[0];
   const label = image ? (app.name?.[0] ?? "?") : fallback[1];
   return (
     <button
@@ -1629,13 +1656,11 @@ function AppCard({
       }}
     >
       <div
-        className={`app-icon ${image && !iconFailed ? "native-icon" : ""}`}
+        className={`app-icon ${image && iconSrc ? "native-icon" : ""}`}
         style={{ background: bg }}
       >
         {image && iconSrc ? (
-          <img src={iconSrc} alt="" draggable={false} onError={() => { setIconSrc(""); setIconFailed(true); }} />
-        ) : image && !iconFailed ? (
-          <span className="icon-loading" />
+          <img src={iconSrc} alt="" draggable={false} onError={() => { setIconSrc(""); }} />
         ) : (
           label
         )}
@@ -2095,6 +2120,9 @@ function SettingsPage({
               : "应用扫描"
         }
       >
+        <ToggleRow title={en ? "Automatically add newly installed apps" : "自动加入新安装的应用"}
+          desc={en ? "Checks installation folders every 30 seconds and when the launcher opens; keeps favorites, categories and order." : "每 30 秒及唤起窗口时检查安装目录，自动加入新软件，保留收藏、分类和排序。"}
+          checked={settings.watchInstalledApps} onChange={enabled => update({ watchInstalledApps: enabled })}/>
         {!isWindows && (
           <>
             <ToggleRow
@@ -2129,7 +2157,7 @@ function SettingsPage({
             />
           </>
         )}
-        {isWindows ? <><div className="windows-app-manager"><AppWindow/><div><strong>{en?"Your application library":"管理应用库"}</strong><p>{en?"Choose from Desktop, Start menu, a folder or program files. Only checked apps will be imported.":"桌面、开始菜单、指定文件夹或程序文件，统一在一个窗口内选择添加。"}</p></div><button className="primary" onClick={onAddApp}><Plus/>{en?"Add applications":"添加应用"}</button></div><div className="windows-app-manager-footer"><small>{en?"Manual management only. No startup scanning.":"Windows 仅手动管理，不会开机扫描或自动加入应用。"}</small><button onClick={onClearApps}>{en?"Clear application library…":"清空应用库…"}</button></div></> : <div className="setting-row">
+        {isWindows ? <><div className="windows-app-manager"><AppWindow/><div><strong>{en?"Your application library":"管理应用库"}</strong><p>{en?"Choose from Desktop, Start menu, a folder or program files. Only checked apps will be imported.":"桌面、开始菜单、指定文件夹或程序文件，统一在一个窗口内选择添加。"}</p></div><button className="primary" onClick={onAddApp}><Plus/>{en?"Add applications":"添加应用"}</button></div><div className="windows-app-manager-footer"><small>{en?"Use automatic discovery above, or select applications manually.":"可开启上方自动发现，也可继续手动选择应用。"}</small><button onClick={onClearApps}>{en?"Clear application library…":"清空应用库…"}</button></div></> : <div className="setting-row">
           <div>
             <strong>{en ? "Manual application list" : "手动管理应用"}</strong>
             <span>

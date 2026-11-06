@@ -170,9 +170,10 @@ impl Default for ShortcutRuntime {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
 fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    { dirs.extend(windows_known_import_roots("start-menu")); }
     #[cfg(target_os = "macos")]
     {
         dirs.extend([
@@ -493,89 +494,17 @@ fn app_icon(path: &Path, name: &str) -> String {
     if let Some(icon) = ios_wrapped_icon(path) {
         return icon;
     }
-    if path.starts_with("/System/Applications") {
-        return quicklook_icon(path, name);
-    }
-    let resources = path.join("Contents/Resources");
-    let declared = plist::Value::from_file(path.join("Contents/Info.plist"))
-        .ok()
-        .and_then(|v| v.into_dictionary())
-        .and_then(|d| {
-            d.get("CFBundleIconFile")
-                .or_else(|| d.get("CFBundleIconName"))
-                .and_then(|v| v.as_string())
-                .map(str::to_owned)
-        });
-    let mut candidates: Vec<PathBuf> = fs::read_dir(&resources)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("icns"))
-        })
-        .collect();
-    let normalized = |s: &str| s.to_lowercase().replace([' ', '-', '_'], "");
-    candidates.sort_by_key(|candidate| {
-        let stem = candidate.file_stem().unwrap_or_default().to_string_lossy();
-        let n = normalized(&stem);
-        let app = normalized(name);
-        let declared_match = declared
-            .as_ref()
-            .is_some_and(|d| normalized(d.trim_end_matches(".icns")) == n);
-        let bad = n.contains("document")
-            || n.contains("file")
-            || n.contains("toolbar")
-            || n.contains("template");
-        -(if declared_match {
-            1000
-        } else if n == app {
-            500
-        } else if n == "appicon" || n == "icon" {
-            300
-        } else if n.contains(&app) || app.contains(&n) {
-            150
-        } else if bad {
-            -200
-        } else {
-            0
-        })
-    });
-    let Some(icns) = candidates.into_iter().next() else {
-        return quicklook_icon(path, name);
-    };
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(format!("icon-v4:{}", icns.to_string_lossy()).as_bytes())
-    );
-    let cache = std::env::temp_dir().join("miaoqi-icons");
-    let _ = fs::create_dir_all(&cache);
-    let png = cache.join(format!("{digest}.png"));
-    if !png.exists() {
-        let _ = Command::new("sips")
-            .args(["-s", "format", "png", "-Z", "160"])
-            .arg(&icns)
-            .arg("--out")
-            .arg(&png)
-            .output();
-        normalize_icon(&png);
-    }
-    fs::read(png)
-        .ok()
-        .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
-        .unwrap_or_else(|| quicklook_icon(path, name))
+    quicklook_icon(path, name)
 }
 
 #[cfg(target_os = "macos")]
 fn quicklook_icon(path: &Path, name: &str) -> String {
-    use objc2::rc::autoreleasepool;
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-    use objc2_foundation::{NSDictionary, NSString};
+    use objc2::{rc::autoreleasepool, AllocAnyThread};
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace, NSImage, NSCompositingOperation};
+    use objc2_foundation::{NSDictionary, NSString, NSSize, NSRect, NSPoint};
     let digest = format!(
         "{:x}",
-        Sha256::digest(format!("workspace-v2:{}", path.to_string_lossy()).as_bytes())
+        Sha256::digest(format!("workspace-v3:{}:{:?}", path.to_string_lossy(), fs::metadata(path).ok().and_then(|m|m.modified().ok())).as_bytes())
     );
     let cache = std::env::temp_dir().join("miaoqi-quicklook").join(&digest);
     let _ = fs::create_dir_all(&cache);
@@ -584,7 +513,11 @@ fn quicklook_icon(path: &Path, name: &str) -> String {
         autoreleasepool(|_| {
             let image = NSWorkspace::sharedWorkspace()
                 .iconForFile(&NSString::from_str(&path.to_string_lossy()));
-            let Some(tiff) = image.TIFFRepresentation() else {
+            let rendered = NSImage::initWithSize(NSImage::alloc(), NSSize::new(160.0, 160.0));
+            rendered.lockFocus();
+            image.drawInRect_fromRect_operation_fraction(NSRect::new(NSPoint::new(0.0,0.0),NSSize::new(160.0,160.0)), NSRect::ZERO, NSCompositingOperation::Copy, 1.0);
+            rendered.unlockFocus();
+            let Some(tiff) = rendered.TIFFRepresentation() else {
                 return;
             };
             let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else {
@@ -927,55 +860,49 @@ fn localized_app_name(_path: &Path, fallback: &str) -> String {
     fallback.to_owned()
 }
 
-fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = extra_dirs;
-        return Vec::new();
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut roots = default_dirs();
-        roots.extend(extra_dirs.into_iter().map(PathBuf::from));
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
-        for root in roots {
-            if !root.exists() {
-                continue;
-            }
-            let max_depth = if cfg!(target_os = "macos") { 3 } else { 5 };
-            for entry in WalkDir::new(root)
-                .max_depth(max_depth)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(Result::ok)
-            {
-                let path = entry.path();
-                if !is_app(path) {
-                    continue;
-                }
-                let raw = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if raw.is_empty() || raw.starts_with('.') || !seen.insert(raw.to_lowercase()) {
-                    continue;
-                }
-                if let Some(app) = app_item_from_path(path, false) {
-                    result.push(app);
-                }
-            }
+fn installed_paths(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for root in roots {
+        if !root.exists() { continue; }
+        let mut entries = WalkDir::new(root).max_depth(if cfg!(target_os = "macos") { 3 } else { 5 }).follow_links(false).into_iter();
+        while let Some(entry) = entries.next() {
+            let Ok(entry) = entry else { continue; };
+            let path = entry.path();
+            if !is_app(path) { continue; }
+            #[cfg(target_os = "windows")]
+            if looks_like_windows_non_app(path) { continue; }
+            paths.push(path.to_owned());
+            // Never descend into .app bundles and expose their helper apps.
+            if entry.file_type().is_dir() { entries.skip_current_dir(); }
         }
-        result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        result
     }
+    paths.sort(); paths.dedup(); paths
+}
+fn catalog_paths(extra_dirs: Vec<String>) -> Vec<PathBuf> {
+    let mut roots = default_dirs();
+    roots.extend(extra_dirs.into_iter().map(PathBuf::from));
+    installed_paths(roots)
+}
+#[tauri::command]
+async fn installed_app_paths(extra_dirs: Vec<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || catalog_paths(extra_dirs).into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
+        .await.map_err(|error| error.to_string())
+}
+fn scan_apps_blocking(extra_dirs: Vec<String>) -> Vec<AppItem> {
+    let mut seen = HashSet::new();
+    let mut result: Vec<_> = catalog_paths(extra_dirs).into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
+        .filter_map(|path| app_item_from_path(&path, false)).collect();
+    result.sort_by(|a,b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result
 }
 
 fn app_item_from_path(path: &Path, manual: bool) -> Option<AppItem> {
     if !is_app(path) {
         return None;
     }
+    #[cfg(target_os = "macos")]
+    if !path.join("Contents/Info.plist").is_file() && !path.join("Wrapper").is_dir() { return None; }
     let raw = path.file_stem()?.to_string_lossy().to_string();
     if raw.is_empty() || raw.starts_with('.') {
         return None;
@@ -3232,6 +3159,7 @@ pub fn run() {
             webdav::webdav_forget,
             start_launcher_drag,
             scan_apps,
+            installed_app_paths,
             existing_app_paths,
             launch_app,
             choose_folder,
@@ -3598,6 +3526,30 @@ mod tests {
         assert_eq!(commands[0].extension_name, "hello-world");
         assert_eq!(commands[0].command_name, "hello");
         fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installed_catalog_sees_new_apps_and_excludes_embedded_helpers() {
+        let root=std::env::temp_dir().join(format!("qimiao-install-test-{}",std::process::id()));
+        fs::create_dir_all(root.join("A.app/Contents/Helpers/Hidden.app")).unwrap();
+        assert_eq!(installed_paths(vec![root.clone()]),vec![root.join("A.app")]);
+        fs::create_dir_all(root.join("New.app/Contents")).unwrap();
+        assert_eq!(installed_paths(vec![root.clone()]).len(),2);
+        assert!(app_item_from_path(&root.join("New.app"),false).is_none(),"partially copied app must be retried");
+        fs::write(root.join("New.app/Contents/Info.plist"),"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleName</key><string>New</string></dict></plist>").unwrap();
+        assert_eq!(app_item_from_path(&root.join("New.app"),false).unwrap().name,"New");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_and_asset_catalog_icons_return_finite_pngs() {
+        for path in ["/System/Applications/iPhone Mirroring.app", "/System/Applications/Journal.app", "/Applications/Imic.app", "/Applications/Kohaku.app"] {
+            if !Path::new(path).exists() {continue;}
+            let icon=app_icon(Path::new(path),"Icon");
+            assert!(icon.starts_with("data:image/png;base64,"),"{path}");
+            let bytes=STANDARD.decode(icon.split(',').nth(1).unwrap()).unwrap();
+            assert_eq!(image::load_from_memory(&bytes).unwrap().width(),160);
+        }
     }
     #[test]
     fn scan_returns_lazy_icon_markers() {
