@@ -461,3 +461,8 @@ test("installation discovery detects only changed paths and preserves first-run 
   assert.equal(sync.normalizeSettings({}).watchInstalledApps, true);
   assert.equal(sync.normalizeSettings({ watchInstalledApps: false }).watchInstalledApps, false);
 });
+
+ test("encoded image filenames survive history validation and sync",()=>{
+ const clip={...clipboard.textClip("",1),kind:"image",imageKey:"a".repeat(64),imageFormat:"webp",imageName:"封面-piclite.webp",byteSize:206512};
+ assert.equal(clipboard.validateClips([clip])[0].imageName,"封面-piclite.webp");
+ });

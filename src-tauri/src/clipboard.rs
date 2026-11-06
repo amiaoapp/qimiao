@@ -300,6 +300,12 @@ fn encoded_image_format(formats: &[String]) -> Option<&'static str> {
     priority.into_iter().find(|expected| formats.iter().any(|format| format == expected))
 }
 
+#[cfg(any(target_os = "macos",test))]
+fn has_file_payload(formats: &[String]) -> bool {
+    let encoded_result = formats.iter().any(|format| format == "com.piclite.image-result") && encoded_image_format(formats).is_some();
+    !encoded_result && formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "NSFilenamesPboardType"))
+}
+
 struct PreparedImage {
     bytes: Vec<u8>,
     extension: &'static str,
@@ -327,7 +333,7 @@ fn prepare_image(bytes: Vec<u8>) -> Result<PreparedImage, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn write_encoded_macos(board: &objc2_app_kit::NSPasteboard, image: &PreparedImage) -> Result<(), String> {
+fn write_encoded_macos(board: &objc2_app_kit::NSPasteboard, image: &PreparedImage, name: Option<&str>) -> Result<(), String> {
     use objc2::{rc::Retained, runtime::ProtocolObject};
     use objc2_app_kit::{NSPasteboardItem, NSPasteboardWriting};
     use objc2_foundation::{NSArray, NSData, NSString};
@@ -339,18 +345,31 @@ fn write_encoded_macos(board: &objc2_app_kit::NSPasteboard, image: &PreparedImag
     if !item.setData_forType(&NSData::with_bytes(&image.bytes), &NSString::from_str(uti)) {
         return Err("无法准备原格式图片".into());
     }
+    static COPY_ID: AtomicUsize = AtomicUsize::new(0);
+    let filename = name.and_then(|name| name.rsplit(['/', '\\']).next()).filter(|name| !name.is_empty() && !matches!(*name,"."|".."))
+        .map(str::to_owned).unwrap_or_else(|| format!("clipboard.{}",image.extension));
+    let path = std::env::temp_dir().join("qimiao-clipboard-results")
+        .join(format!("{}-{}-{}",std::process::id(),millis(),COPY_ID.fetch_add(1,Ordering::Relaxed))).join(&filename);
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&path,&image.bytes).map_err(|e| e.to_string())?;
+    let url=reqwest::Url::from_file_path(&path).map_err(|_| "Invalid clipboard image path")?;
+    if !item.setString_forType(&NSString::from_str(url.as_str()),&NSString::from_str("public.file-url")) ||
+       !item.setString_forType(&NSString::from_str(&json!({"name":filename}).to_string()),&NSString::from_str("com.piclite.image-result")) {
+        return Err("无法准备浏览器原格式图片".into());
+    }
     let object: Retained<ProtocolObject<dyn NSPasteboardWriting>> = ProtocolObject::from_retained(item);
     board.clearContents();
     if board.writeObjects(&NSArray::from_retained_slice(&[object])) { Ok(()) } else { Err("写入图片失败".into()) }
 }
-fn write_encoded_image(context: &ClipboardContext, image: PreparedImage) -> Result<(), String> {
+fn write_encoded_image(context: &ClipboardContext, image: PreparedImage, name: Option<&str>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = context;
-        objc2::rc::autoreleasepool(|_| write_encoded_macos(&objc2_app_kit::NSPasteboard::generalPasteboard(), &image))
+        objc2::rc::autoreleasepool(|_| write_encoded_macos(&objc2_app_kit::NSPasteboard::generalPasteboard(), &image, name))
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = name;
         let mime = match image.extension {
             "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif",
             "tiff" => "image/tiff", "bmp" => "image/bmp", _ => "image/png",
@@ -590,7 +609,7 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
     let image_format = encoded_image_format(&formats);
     // Use the owner's advertised types instead of requesting AppKit conversions.
     #[cfg(target_os = "macos")]
-    let has_files = formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "NSFilenamesPboardType"));
+    let has_files = has_file_payload(&formats);
     #[cfg(not(target_os = "macos"))]
     let has_files = context.has(ContentFormat::Files);
     #[cfg(not(target_os = "macos"))]
@@ -604,6 +623,16 @@ fn read_snapshot(app: &tauri::AppHandle, ignored_apps: &[String]) -> Result<Capt
         return Err("剪贴板文件列表尚未就绪，正在重试".into());
     }
     let mut value = json!({ "text":text, "files":files });
+    #[cfg(target_os = "macos")]
+    if formats.iter().any(|format| format == "com.piclite.image-result") {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::NSString;
+        if let Some(raw) = NSPasteboard::generalPasteboard().stringForType(&NSString::from_str("com.piclite.image-result")) {
+            if let Ok(meta) = serde_json::from_str::<Value>(&raw.to_string()) {
+                if let Some(name) = meta["name"].as_str().filter(|name| name.len()<=1024) { value["imageName"] = json!(name); }
+            }
+        }
+    }
     #[cfg(not(target_os = "macos"))]
     let has_image = image_format.is_some() || context.has(ContentFormat::Image);
     #[cfg(target_os = "macos")]
@@ -818,7 +847,7 @@ fn put_clipboard(app: &tauri::AppHandle, clip: &Value, plain: bool) -> Result<()
         if let Some(key) = clip.get("imageKey").and_then(Value::as_str) {
             let path = image_path(app, key, clip["imageFormat"].as_str())?;
             let bytes = fs::read(path).map_err(|_| "原图不在本机，请先下载图片或同步剪贴板")?;
-            return write_encoded_image(context, prepare_image(bytes)?);
+            return write_encoded_image(context, prepare_image(bytes)?, clip["imageName"].as_str());
         }
         if let Some(files) = clip
             .get("files")
@@ -975,6 +1004,15 @@ mod tests {
         output.into_inner()
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn encoded_result_file_representation_does_not_become_a_file_history_record() {
+        use super::has_file_payload;
+        let types=|v:&[&str]|v.iter().map(|t|t.to_string()).collect::<Vec<_>>();
+        assert!(!has_file_payload(&types(&["org.webmproject.webp","public.file-url","com.piclite.image-result"])));
+        assert!(has_file_payload(&types(&["public.file-url","public.tiff"])));
+        assert!(has_file_payload(&types(&["public.file-url","com.piclite.image-result"])));
+    }
     #[test]
     fn preserves_encoded_bytes_size_extension_and_digest_through_storage() {
         use super::*;
@@ -1015,7 +1053,7 @@ mod tests {
                 let bytes = encoded_fixture(format);
                 // Start with a native encoded copy, capture the preferred type,
                 // persist the history record, then re-copy the stored original.
-                write_encoded_macos(&board, &prepare_image(bytes.clone()).unwrap()).unwrap();
+                write_encoded_macos(&board, &prepare_image(bytes.clone()).unwrap(), Some("compressed-result.webp")).unwrap();
                 let formats = board.types().unwrap().iter().map(|item| item.to_string()).collect::<Vec<_>>();
                 assert_eq!(encoded_image_format(&formats), Some(uti));
                 let captured = board.dataForType(&NSString::from_str(encoded_image_format(&formats).unwrap())).unwrap().to_vec();
@@ -1027,11 +1065,13 @@ mod tests {
                 let path = directory.join(format!("{}.{}", record["imageKey"].as_str().unwrap(), image_extension(record["imageFormat"].as_str()).unwrap()));
                 let stored = fs::read(path).unwrap();
                 assert_eq!(stored, bytes);
-                write_encoded_macos(&board, &prepare_image(stored).unwrap()).unwrap();
+                write_encoded_macos(&board, &prepare_image(stored).unwrap(), Some("compressed-result.webp")).unwrap();
                 fs::remove_dir_all(directory).unwrap();
                 assert_eq!(board.dataForType(&NSString::from_str(uti)).unwrap().to_vec(), bytes);
                 assert!(NSImage::canInitWithPasteboard(&board));
-                assert!(!formats.iter().any(|format| matches!(format.as_str(), "public.file-url" | "public.utf8-plain-text")));
+                assert!(formats.iter().any(|format| format == "public.file-url"));
+                assert!(!has_file_payload(&formats),"browser file representation must remain an image history item");
+                assert!(!formats.iter().any(|format| format == "public.utf8-plain-text"));
             }
             board.clearContents();
         });
